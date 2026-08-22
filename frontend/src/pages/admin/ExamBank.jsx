@@ -42,9 +42,11 @@ const ExamBank = () => {
                   <h3 className="font-semibold text-slate-800 mb-1 line-clamp-2">{exam.title}</h3>
                   {exam.subject && <p className="text-sm text-slate-500 mb-3">{exam.subject}</p>}
                   <div className="flex flex-wrap gap-2 text-xs text-slate-400">
-                    <span className="flex items-center gap-1"><Hash className="w-3 h-3" /> {exam.examCode}</span>
-                    <span className="flex items-center gap-1"><Calendar className="w-3 h-3" /> {new Date(exam.createdAt).toLocaleDateString()}</span>
-                    <span className="badge badge-blue ml-auto">{exam.questions?.length || 0} questions</span>
+                    <span className="badge badge-blue ml-auto">
+                      {(exam.sections || []).reduce((acc, s) => acc + (s.questions?.length || 0), 0) +
+                        (exam.questions?.length || 0)}{' '}
+                      questions
+                    </span>
                   </div>
                 </div>
               </Link>

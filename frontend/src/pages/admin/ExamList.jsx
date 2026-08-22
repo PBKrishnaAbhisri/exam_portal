@@ -60,16 +60,22 @@ const ExamList = () => {
   };
 
   const handlePublishToggle = async (id, current, endTime) => {
-    if (new Date() < new Date(endTime)) {
-      toast.error('Results cannot be published before the exam has ended.');
-      return;
+    const isEnded = new Date() >= new Date(endTime);
+    let force = false;
+    if (!current && !isEnded) {
+      const proceed = window.confirm(
+        `This exam is scheduled to end on ${new Date(endTime).toLocaleString()}.\n\nPublish results now anyway?`
+      );
+      if (!proceed) return;
+      force = true;
     }
     try {
-      await togglePublishResults(id);
-      setExams(exams.map((e) => e._id === id ? { ...e, publishResults: !current } : e));
-      toast.success(`Results ${!current ? 'published ✉ emails sent' : 'unpublished'}.`);
+      const { data } = await togglePublishResults(id, force);
+      const newStatus = data.publishResults !== undefined ? data.publishResults : !current;
+      setExams((prev) => prev.map((e) => (e._id === id ? { ...e, publishResults: newStatus } : e)));
+      toast.success(`Results ${newStatus ? 'published' : 'unpublished (hidden)'}.`);
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Failed to update.');
+      toast.error(err.response?.data?.message || 'Failed to update publish status.');
     }
   };
 
@@ -185,9 +191,8 @@ const ExamList = () => {
                           <p>Year: {exam.eligibleYears?.join(', ') || 'All'}</p>
                         </td>
                         <td className="text-center font-semibold text-slate-700">
-                          {exam.isMultiSection
-                            ? (exam.sections || []).reduce((acc, s) => acc + (s.questions?.length || 0), 0)
-                            : (exam.questions?.length || 0)}
+                          {(exam.sections || []).reduce((acc, s) => acc + (s.questions?.length || 0), 0) +
+                            (exam.questions?.length || 0)}
                         </td>
                         <td className="text-xs text-slate-500">
                           {new Date(exam.startTime).toLocaleDateString()}

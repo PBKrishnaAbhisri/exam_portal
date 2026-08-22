@@ -80,9 +80,26 @@ const ExamInstructions = () => {
           <div className="bg-white/10 backdrop-blur-xl rounded-2xl border border-white/20 p-5">
             <h2 className="font-semibold text-white mb-3 text-sm uppercase tracking-wide">Exam Details</h2>
             <div className="space-y-2 text-sm">
-              {[['Duration', `${exam.duration} minutes`], ['Questions', exam.questions?.length || 0], ['Marks/Q', exam.marksPerQuestion], ['Total Marks', (exam.questions?.length || 0) * exam.marksPerQuestion], ['Negative Marking', exam.negativeMarking ? `Yes (−${exam.negativeMarkValue})` : 'No'], ['Violation Limit', `${exam.violationThreshold || 3} = Locked`]].map(([l, v]) => (
-                <div key={l} className="flex justify-between"><span className="text-slate-400">{l}</span><span className={`font-medium text-white ${l === 'Negative Marking' && exam.negativeMarking ? 'text-red-400' : ''}`}>{v}</span></div>
-              ))}
+              {(() => {
+                const totalQuestions =
+                  (exam.sections || []).reduce((acc, s) => acc + (s.questions?.length || 0), 0) +
+                  (exam.questions?.length || 0);
+                return [
+                  ['Duration', `${exam.duration} minutes`],
+                  ['Questions', totalQuestions],
+                  ['Marks/Q', exam.marksPerQuestion],
+                  ['Total Marks', totalQuestions * (exam.marksPerQuestion || 1)],
+                  ['Negative Marking', exam.negativeMarking ? `Yes (−${exam.negativeMarkValue})` : 'No'],
+                  ['Violation Limit', `${exam.violationThreshold || 3} = Locked`],
+                ].map(([l, v]) => (
+                  <div key={l} className="flex justify-between">
+                    <span className="text-slate-400">{l}</span>
+                    <span className={`font-medium text-white ${l === 'Negative Marking' && exam.negativeMarking ? 'text-red-400' : ''}`}>
+                      {v}
+                    </span>
+                  </div>
+                ));
+              })()}
             </div>
           </div>
 

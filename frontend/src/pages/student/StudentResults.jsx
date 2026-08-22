@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import StudentLayout from '../../components/common/StudentLayout';
-import { getEligibleExams, getMyResult, getDomains } from '../../api';
+import { getEligibleExams, getMyResult, getMyAllResults, getDomains } from '../../api';
 import {
   Award, CheckCircle, XCircle, Clock, AlertCircle,
   ChevronDown, ChevronUp, BarChart3, ExternalLink,
@@ -33,23 +33,66 @@ const StudentResults = () => {
   useEffect(() => {
     const fetch = async () => {
       try {
-        const { data } = await getEligibleExams();
-        const allExams = [...(data.completed || []), ...(data.live || [])];
-        const uniqueExams = Array.from(new Map(allExams.map((e) => [e._id, e])).values());
+        const [eligibleRes, allMyResultsRes] = await Promise.allSettled([
+          getEligibleExams(),
+          getMyAllResults(),
+        ]);
+
+        const eligibleData = eligibleRes.status === 'fulfilled' ? eligibleRes.value.data : {};
+        const myResultsList = allMyResultsRes.status === 'fulfilled' ? allMyResultsRes.value.data?.results || [] : [];
 
         const resultData = {};
-        const attendedExams = [];
+        const examMap = new Map();
 
+        // Add completed and live eligible exams
+        const eligibleExams = [...(eligibleData.completed || []), ...(eligibleData.live || [])];
+        eligibleExams.forEach((e) => {
+          if (e && e._id) examMap.set(e._id.toString(), e);
+        });
+
+        // Add and populate from myResultsList (guaranteed to include all attempted exams)
+        myResultsList.forEach((item) => {
+          if (item?.exam?._id) {
+            const idStr = item.exam._id.toString();
+            if (!examMap.has(idStr)) {
+              examMap.set(idStr, item.exam);
+            }
+            if (item.published) {
+              resultData[item.exam._id] = {
+                type: 'published',
+                data: {
+                  published: true,
+                  examTitle: item.exam.title,
+                  totalScore: item.totalScore,
+                  maxPossibleScore: item.maxPossibleScore,
+                  status: item.status,
+                  submittedAt: item.submittedAt,
+                  breakdown: item.breakdown,
+                },
+              };
+            } else if (item.status) {
+              resultData[item.exam._id] = {
+                type: 'pending',
+                submission: {
+                  status: item.status,
+                  submittedAt: item.submittedAt,
+                  violationCount: item.violationCount,
+                },
+              };
+            }
+          }
+        });
+
+        // For any eligible exams not in myResultsList, check getMyResult
+        const remainingExams = Array.from(examMap.values()).filter((e) => !resultData[e._id]);
         await Promise.all(
-          uniqueExams.map(async (exam) => {
+          remainingExams.map(async (exam) => {
             try {
               const { data: res } = await getMyResult(exam._id);
               if (res.published) {
                 resultData[exam._id] = { type: 'published', data: res };
-                attendedExams.push(exam);
               } else if (!res.notAttempted && res.submission) {
                 resultData[exam._id] = { type: 'pending', submission: res.submission };
-                attendedExams.push(exam);
               }
             } catch {
               // Ignore
@@ -57,7 +100,7 @@ const StudentResults = () => {
           })
         );
 
-        setCompletedExams(attendedExams.length > 0 ? attendedExams : (data.completed || []));
+        setCompletedExams(Array.from(examMap.values()));
         setResults(resultData);
       } catch (err) {
         console.error('Error loading results list:', err);

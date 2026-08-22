@@ -74,7 +74,10 @@ const AdminDashboard = () => {
                     <tr key={exam._id}>
                       <td className="font-medium text-slate-800">{exam.title}</td>
                       <td><span className="font-mono text-xs bg-slate-100 px-2 py-1 rounded-md text-slate-600">{exam.examCode}</span></td>
-                      <td className="text-center text-slate-600">{exam.questions?.length || 0}</td>
+                      <td className="text-center font-semibold text-slate-600">
+                        {(exam.sections || []).reduce((acc, s) => acc + (s.questions?.length || 0), 0) +
+                          (exam.questions?.length || 0)}
+                      </td>
                       <td className="text-slate-500 text-xs">{new Date(exam.startTime).toLocaleString()}</td>
                       <td><span className={status.cls}>{status.label}</span></td>
                       <td>

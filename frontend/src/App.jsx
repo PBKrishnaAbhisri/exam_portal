@@ -7,6 +7,7 @@ import ProtectedRoute from './components/common/ProtectedRoute';
 import Login from './pages/Login';
 import StudentSignup from './pages/StudentSignup';
 import AdminSignup from './pages/AdminSignup';
+import ForgotPassword from './pages/ForgotPassword';
 
 // Admin pages
 import AdminDashboard from './pages/admin/AdminDashboard';
@@ -53,6 +54,7 @@ function App() {
         <Routes>
           {/* Public routes */}
           <Route path="/login" element={<Login />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/signup/student" element={<StudentSignup />} />
           <Route path="/signup/admin" element={<AdminSignup />} />
           <Route path="/" element={<Navigate to="/login" replace />} />

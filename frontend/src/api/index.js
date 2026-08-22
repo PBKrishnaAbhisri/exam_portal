@@ -35,6 +35,10 @@ export const signupStudent = (data) => API.post('/auth/signup/student', data);
 export const signupAdmin = (data) => API.post('/auth/signup/admin', data);
 export const getMe = () => API.get('/auth/me');
 export const updateProfile = (data) => API.patch('/auth/profile', data);
+export const resetStudentPassword = (data) => API.post('/auth/student/reset-password', data);
+export const changePassword = (data) => API.post('/auth/change-password', data);
+export const sendForgotPasswordOTP = (data) => API.post('/auth/forgot-password/send-otp', data);
+export const resetPasswordWithOTP = (data) => API.post('/auth/forgot-password/reset', data);
 
 export const createExam = (data) => API.post('/exams', data);
 export const updateExam = (id, data) => API.put(`/exams/${id}`, data);
@@ -123,6 +127,7 @@ export const submitExam = (submissionId, autoSubmit = false) =>
   API.post(`/submissions/${submissionId}/submit`, { autoSubmit });
 export const getMySubmission = (examId) => API.get(`/submissions/my/${examId}`);
 export const getMyResult = (examId) => API.get(`/submissions/result/${examId}`);
+export const getMyAllResults = () => API.get('/submissions/my-results');
 export const heartbeatExam = (submissionId) => API.patch(`/submissions/${submissionId}/heartbeat`);
 
 export const getExamSubmissions = (examId) => API.get(`/submissions/admin/exam/${examId}`);
