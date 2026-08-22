@@ -1,7 +1,7 @@
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import toast from 'react-hot-toast';
-import { GraduationCap, LayoutDashboard, Award, LogOut } from 'lucide-react';
+import { GraduationCap, LayoutDashboard, Award, LogOut, UserCircle } from 'lucide-react';
 
 const StudentLayout = ({ children }) => {
   const { user, logout } = useAuth();
@@ -16,6 +16,7 @@ const StudentLayout = ({ children }) => {
   const navItems = [
     { to: '/student', label: 'My Exams', icon: LayoutDashboard, end: true },
     { to: '/student/results', label: 'Results', icon: Award },
+    { to: '/student/profile', label: 'My Profile', icon: UserCircle },
   ];
 
   return (

@@ -24,9 +24,14 @@ router.post(
   '/signup/student',
   [
     body('name').trim().notEmpty().withMessage('Name is required'),
-    body('email').isEmail().withMessage('Valid email is required'),
+    body('email')
+      .isEmail().withMessage('Valid email is required')
+      .matches(/^N\d{6}@rguktn\.ac\.in$/i)
+      .withMessage('Student email must be in the format N######@rguktn.ac.in'),
     body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
-    body('rollNumber').trim().notEmpty().withMessage('Roll number is required'),
+    body('rollNumber')
+      .trim().notEmpty().withMessage('Roll number is required')
+      .matches(/^N\d{6}/i).withMessage('Roll number must start with N followed by 6 digits (e.g. N210782)'),
     body('branch').notEmpty().withMessage('Branch is required'),
     body('year').isInt({ min: 1, max: 4 }).withMessage('Year must be between 1 and 4'),
     body('cgpa').isFloat({ min: 0, max: 10 }).withMessage('CGPA must be between 0 and 10'),
@@ -37,7 +42,7 @@ router.post(
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { name, email, password, rollNumber, branch, year, cgpa } = req.body;
+    const { name, email, password, rollNumber, branch, year, cgpa, domains } = req.body;
 
     try {
       // Check if email already exists
@@ -52,6 +57,16 @@ router.post(
         return res.status(409).json({ message: 'Roll number already registered.' });
       }
 
+      // Validate domains against branch restriction
+      const { getAllowedDomainsForBranch } = require('../config/domains');
+      const allowedDomains = getAllowedDomainsForBranch(branch);
+      const invalidDomains = (domains || []).filter(d => !allowedDomains.includes(d));
+      if (invalidDomains.length > 0) {
+        return res.status(400).json({
+          message: `Invalid domain selection for your branch: ${invalidDomains.join(', ')}`,
+        });
+      }
+
       const user = await User.create({
         name,
         email,
@@ -61,6 +76,8 @@ router.post(
         branch,
         year: Number(year),
         cgpa: Number(cgpa),
+        domains: domains || [],
+        status: 'active',
       });
 
       const token = generateToken(user);
@@ -95,7 +112,10 @@ router.post(
   '/signup/admin',
   [
     body('name').trim().notEmpty().withMessage('Name is required'),
-    body('email').isEmail().withMessage('Valid email is required'),
+    body('email')
+      .isEmail().withMessage('Valid email is required')
+      .matches(/@rguktn\.ac\.in$/i)
+      .withMessage('Admin email must be a @rguktn.ac.in address'),
     body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
   ],
   async (req, res) => {
@@ -146,7 +166,10 @@ router.post(
 router.post(
   '/login',
   [
-    body('email').isEmail().withMessage('Valid email is required'),
+    body('email')
+      .isEmail().withMessage('Valid email is required')
+      .matches(/@rguktn\.ac\.in$/i)
+      .withMessage('Only @rguktn.ac.in email addresses are allowed'),
     body('password').notEmpty().withMessage('Password is required'),
   ],
   async (req, res) => {
@@ -201,10 +224,67 @@ router.post(
  * @desc    Get current logged-in user profile
  * @access  Private
  */
-const { authenticate } = require('../middleware/auth');
+const { authenticate, requireStudent } = require('../middleware/auth');
 
 router.get('/me', authenticate, async (req, res) => {
   res.status(200).json({ user: req.user });
+});
+
+/**
+ * @route   PATCH /api/auth/profile
+ * @desc    Student updates their own profile (name, cgpa, domains)
+ * @access  Student
+ */
+const { getAllowedDomainsForBranch } = require('../config/domains');
+
+router.patch('/profile', authenticate, requireStudent, async (req, res) => {
+  try {
+    const { name, cgpa, domains } = req.body;
+    const user = await User.findById(req.user._id);
+    if (!user) return res.status(404).json({ message: 'User not found.' });
+
+    if (name) user.name = name.trim();
+    if (cgpa !== undefined) {
+      const parsed = parseFloat(cgpa);
+      if (isNaN(parsed) || parsed < 0 || parsed > 10) {
+        return res.status(400).json({ message: 'CGPA must be between 0 and 10.' });
+      }
+      user.cgpa = parsed;
+    }
+
+    if (domains !== undefined) {
+      // Validate domain selections against branch-specific allowed domains
+      const allowedDomains = getAllowedDomainsForBranch(user.branch);
+      const invalid = domains.filter(d => !allowedDomains.includes(d));
+      if (invalid.length > 0) {
+        return res.status(400).json({
+          message: `These domains are not allowed for your branch (${user.branch}): ${invalid.join(', ')}`,
+        });
+      }
+      user.domains = domains;
+    }
+
+    await user.save();
+
+    res.status(200).json({
+      message: 'Profile updated successfully.',
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        rollNumber: user.rollNumber,
+        branch: user.branch,
+        year: user.year,
+        cgpa: user.cgpa,
+        domains: user.domains,
+        status: user.status,
+      },
+    });
+  } catch (error) {
+    console.error('Profile update error:', error);
+    res.status(500).json({ message: 'Server error updating profile.' });
+  }
 });
 
 module.exports = router;

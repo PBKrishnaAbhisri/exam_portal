@@ -5,7 +5,23 @@ const Exam = require('../models/Exam');
 const Submission = require('../models/Submission');
 const { upload } = require('../config/cloudinary');
 
+const { getDomainCategoriesForBranch, DOMAIN_CATEGORIES } = require('../config/domains');
+
+// ─── PUBLIC ROUTES ──────────────────────────────────────────────────────────
+
+/**
+ * @route   GET /api/exams/domains
+ * @desc    Get domain list (optionally filtered by branch)
+ * @access  Public
+ */
+router.get('/domains', async (req, res) => {
+  const { branch } = req.query;
+  const categories = branch ? getDomainCategoriesForBranch(branch) : DOMAIN_CATEGORIES;
+  res.status(200).json({ categories });
+});
+
 // ─── ADMIN ROUTES ───────────────────────────────────────────────────────────
+
 
 /**
  * @route   POST /api/exams
@@ -26,12 +42,21 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
       negativeMarkValue,
       eligibleBranches,
       eligibleYears,
+      eligibleDomains,
       shuffleQuestions,
       shuffleOptions,
       unlockCode,
       violationThreshold,
+      isMultiSection,
+      sections,
       questions,
     } = req.body;
+
+    if (!eligibleDomains || !Array.isArray(eligibleDomains) || eligibleDomains.length === 0) {
+      return res.status(400).json({
+        message: 'Domain selection is mandatory. Please select at least one eligible domain.',
+      });
+    }
 
     const exam = await Exam.create({
       title,
@@ -45,11 +70,14 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
       negativeMarkValue: negativeMarking ? (negativeMarkValue || 0) : 0,
       eligibleBranches: eligibleBranches || [],
       eligibleYears: eligibleYears || [],
+      eligibleDomains: eligibleDomains || [],
       shuffleQuestions: shuffleQuestions || false,
       shuffleOptions: shuffleOptions || false,
       unlockCode: unlockCode || '',
       violationThreshold: violationThreshold || 3,
       createdBy: req.user._id,
+      isMultiSection: isMultiSection || false,
+      sections: sections || [],
       questions: questions || [],
     });
 
@@ -73,8 +101,10 @@ router.put('/:id', authenticate, requireAdmin, async (req, res) => {
     const allowedUpdates = [
       'title', 'description', 'subject', 'duration', 'startTime', 'endTime',
       'marksPerQuestion', 'negativeMarking', 'negativeMarkValue',
-      'eligibleBranches', 'eligibleYears', 'shuffleQuestions', 'shuffleOptions',
-      'unlockCode', 'violationThreshold', 'publishResults', 'questions',
+      'eligibleBranches', 'eligibleYears', 'eligibleDomains',
+      'shuffleQuestions', 'shuffleOptions',
+      'unlockCode', 'violationThreshold',
+      'isMultiSection', 'sections', 'questions',
     ];
 
     allowedUpdates.forEach((field) => {
@@ -97,8 +127,95 @@ router.put('/:id', authenticate, requireAdmin, async (req, res) => {
 });
 
 /**
+ * @route   POST /api/exams/:id/sections
+ * @desc    Add a section to a multi-section exam
+ * @access  Admin
+ */
+router.post('/:id/sections', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const exam = await Exam.findById(req.params.id);
+    if (!exam) return res.status(404).json({ message: 'Exam not found.' });
+
+    const { title, duration } = req.body;
+    if (!title || !duration) {
+      return res.status(400).json({ message: 'Section title and duration (mins) are required.' });
+    }
+
+    exam.isMultiSection = true;
+    exam.sections.push({
+      title,
+      duration: Number(duration),
+      questions: [],
+    });
+
+    // Recalculate total duration as sum of sections
+    exam.duration = exam.sections.reduce((sum, s) => sum + (s.duration || 0), 0);
+
+    await exam.save();
+    res.status(201).json({ message: 'Section added successfully.', exam });
+  } catch (error) {
+    console.error('Add section error:', error);
+    res.status(500).json({ message: 'Server error adding section.', error: error.message });
+  }
+});
+
+/**
+ * @route   PUT /api/exams/:id/sections/:sectionId
+ * @desc    Update a section title or duration
+ * @access  Admin
+ */
+router.put('/:id/sections/:sectionId', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const exam = await Exam.findById(req.params.id);
+    if (!exam) return res.status(404).json({ message: 'Exam not found.' });
+
+    const section = exam.sections.id(req.params.sectionId);
+    if (!section) return res.status(404).json({ message: 'Section not found.' });
+
+    if (req.body.title !== undefined) section.title = req.body.title;
+    if (req.body.duration !== undefined) section.duration = Number(req.body.duration);
+
+    // Recalculate total duration
+    exam.duration = exam.sections.reduce((sum, s) => sum + (s.duration || 0), 0);
+
+    await exam.save();
+    res.status(200).json({ message: 'Section updated successfully.', exam });
+  } catch (error) {
+    console.error('Update section error:', error);
+    res.status(500).json({ message: 'Server error updating section.' });
+  }
+});
+
+/**
+ * @route   DELETE /api/exams/:id/sections/:sectionId
+ * @desc    Delete a section from a multi-section exam
+ * @access  Admin
+ */
+router.delete('/:id/sections/:sectionId', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const exam = await Exam.findById(req.params.id);
+    if (!exam) return res.status(404).json({ message: 'Exam not found.' });
+
+    exam.sections = exam.sections.filter(
+      (s) => s._id.toString() !== req.params.sectionId
+    );
+
+    // Update total duration
+    if (exam.sections.length > 0) {
+      exam.duration = exam.sections.reduce((sum, s) => sum + (s.duration || 0), 0);
+    }
+
+    await exam.save();
+    res.status(200).json({ message: 'Section deleted successfully.', exam });
+  } catch (error) {
+    console.error('Delete section error:', error);
+    res.status(500).json({ message: 'Server error deleting section.' });
+  }
+});
+
+/**
  * @route   POST /api/exams/:id/questions
- * @desc    Add a question to exam (with optional image upload)
+ * @desc    Add a question to exam or specific section (with optional image upload)
  * @access  Admin
  */
 router.post('/:id/questions', authenticate, requireAdmin, upload.single('image'), async (req, res) => {
@@ -109,7 +226,7 @@ router.post('/:id/questions', authenticate, requireAdmin, upload.single('image')
     const {
       type, questionText, options, correctOptions,
       acceptedTexts, numericValue, numericTolerance, fillBlankType,
-      subject, topic, sourceExamId,
+      subject, topic, sourceExamId, sectionId, sectionIndex,
     } = req.body;
 
     const newQuestion = {
@@ -118,8 +235,8 @@ router.post('/:id/questions', authenticate, requireAdmin, upload.single('image')
       options: options ? (Array.isArray(options) ? options : JSON.parse(options)) : [],
       correctOptions: correctOptions ? (Array.isArray(correctOptions) ? correctOptions.map(Number) : JSON.parse(correctOptions).map(Number)) : [],
       acceptedTexts: acceptedTexts ? (Array.isArray(acceptedTexts) ? acceptedTexts : JSON.parse(acceptedTexts)) : [],
-      numericValue: numericValue !== undefined ? Number(numericValue) : null,
-      numericTolerance: numericTolerance !== undefined ? Number(numericTolerance) : 0,
+      numericValue: numericValue !== undefined && numericValue !== '' ? Number(numericValue) : null,
+      numericTolerance: numericTolerance !== undefined && numericTolerance !== '' ? Number(numericTolerance) : 0,
       fillBlankType: fillBlankType || null,
       subject: subject || '',
       topic: topic || '',
@@ -128,12 +245,35 @@ router.post('/:id/questions', authenticate, requireAdmin, upload.single('image')
       imagePublicId: req.file ? req.file.filename : null,
     };
 
-    exam.questions.push(newQuestion);
+    let createdQuestion;
+
+    if (exam.isMultiSection && exam.sections?.length > 0) {
+      let targetSection;
+      if (sectionId) {
+        targetSection = exam.sections.id(sectionId);
+      } else if (sectionIndex !== undefined && exam.sections[Number(sectionIndex)]) {
+        targetSection = exam.sections[Number(sectionIndex)];
+      } else {
+        targetSection = exam.sections[0];
+      }
+
+      if (!targetSection) {
+        return res.status(400).json({ message: 'Target section not found.' });
+      }
+
+      targetSection.questions.push(newQuestion);
+      createdQuestion = targetSection.questions[targetSection.questions.length - 1];
+    } else {
+      exam.questions.push(newQuestion);
+      createdQuestion = exam.questions[exam.questions.length - 1];
+    }
+
     await exam.save();
 
     res.status(201).json({
       message: 'Question added successfully.',
-      question: exam.questions[exam.questions.length - 1],
+      question: createdQuestion,
+      exam,
     });
   } catch (error) {
     console.error('Add question error:', error);
@@ -143,7 +283,7 @@ router.post('/:id/questions', authenticate, requireAdmin, upload.single('image')
 
 /**
  * @route   PUT /api/exams/:id/questions/:questionId
- * @desc    Edit a specific question (with optional new image)
+ * @desc    Edit a specific question (supports flat and multi-section)
  * @access  Admin
  */
 router.put('/:id/questions/:questionId', authenticate, requireAdmin, upload.single('image'), async (req, res) => {
@@ -151,7 +291,19 @@ router.put('/:id/questions/:questionId', authenticate, requireAdmin, upload.sing
     const exam = await Exam.findById(req.params.id);
     if (!exam) return res.status(404).json({ message: 'Exam not found.' });
 
-    const question = exam.questions.id(req.params.questionId);
+    let question = exam.questions.id(req.params.questionId);
+
+    // If not found in flat questions, search inside sections
+    if (!question && exam.sections?.length > 0) {
+      for (const s of exam.sections) {
+        const found = s.questions.id(req.params.questionId);
+        if (found) {
+          question = found;
+          break;
+        }
+      }
+    }
+
     if (!question) return res.status(404).json({ message: 'Question not found.' });
 
     const fields = [
@@ -178,7 +330,7 @@ router.put('/:id/questions/:questionId', authenticate, requireAdmin, upload.sing
     }
 
     await exam.save();
-    res.status(200).json({ message: 'Question updated successfully.', question });
+    res.status(200).json({ message: 'Question updated successfully.', question, exam });
   } catch (error) {
     console.error('Update question error:', error);
     res.status(500).json({ message: 'Server error updating question.', error: error.message });
@@ -187,7 +339,7 @@ router.put('/:id/questions/:questionId', authenticate, requireAdmin, upload.sing
 
 /**
  * @route   DELETE /api/exams/:id/questions/:questionId
- * @desc    Delete a question from exam
+ * @desc    Delete a question from exam (supports flat and multi-section)
  * @access  Admin
  */
 router.delete('/:id/questions/:questionId', authenticate, requireAdmin, async (req, res) => {
@@ -199,8 +351,16 @@ router.delete('/:id/questions/:questionId', authenticate, requireAdmin, async (r
       (q) => q._id.toString() !== req.params.questionId
     );
 
+    if (exam.sections?.length > 0) {
+      exam.sections.forEach((s) => {
+        s.questions = s.questions.filter(
+          (q) => q._id.toString() !== req.params.questionId
+        );
+      });
+    }
+
     await exam.save();
-    res.status(200).json({ message: 'Question deleted successfully.' });
+    res.status(200).json({ message: 'Question deleted successfully.', exam });
   } catch (error) {
     console.error('Delete question error:', error);
     res.status(500).json({ message: 'Server error deleting question.' });
@@ -244,20 +404,101 @@ router.get('/admin/:id', authenticate, requireAdmin, async (req, res) => {
 
 /**
  * @route   PATCH /api/exams/:id/publish
- * @desc    Toggle publish results for an exam
+ * @desc    Publish/unpublish results — only allowed after exam.endTime has passed
  * @access  Admin
  */
+const { sendExamPublishNotifications } = require('../utils/mailer');
+const User = require('../models/User');
+
+/**
+ * @route   POST /api/exams/:id/notify
+ * @desc    Stream email notifications with real-time progress via SSE
+ * @access  Admin
+ */
+router.post('/:id/notify', authenticate, requireAdmin, async (req, res) => {
+  // Set up SSE streaming headers
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no', // Disable nginx buffering
+  });
+
+  const send = (data) => {
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
+    const exam = await Exam.findById(req.params.id);
+    if (!exam) {
+      send({ error: 'Exam not found.' });
+      return res.end();
+    }
+
+    // Find all eligible students
+    const studentQuery = {};
+    if (exam.eligibleBranches?.length > 0) studentQuery.branch = { $in: exam.eligibleBranches };
+    if (exam.eligibleYears?.length > 0) studentQuery.year = { $in: exam.eligibleYears };
+    if (exam.eligibleDomains?.length > 0) studentQuery.domains = { $in: exam.eligibleDomains };
+    studentQuery.role = 'student';
+    studentQuery.status = 'active';
+
+    const students = await User.find(studentQuery).select('name email');
+
+    // Emit initial state so client knows the total immediately
+    send({ started: true, total: students.length, sent: 0, failed: 0 });
+
+    // Stream progress after each email via onProgress callback
+    const result = await sendExamPublishNotifications(exam, students, (progress) => {
+      send(progress);
+    });
+
+    // Emit final summary
+    send({ done: true, ...result, total: students.length });
+    res.end();
+  } catch (error) {
+    console.error('Notify students error:', error);
+    send({ error: error.message || 'Server error sending email notifications.' });
+    res.end();
+  }
+});
+
 router.patch('/:id/publish', authenticate, requireAdmin, async (req, res) => {
   try {
     const exam = await Exam.findById(req.params.id);
     if (!exam) return res.status(404).json({ message: 'Exam not found.' });
 
+    // ── Gating: cannot publish before exam ends (unless admin passes ?force=true) ─
+    const now = new Date();
+    if (!req.query.force && now < new Date(exam.endTime)) {
+      return res.status(403).json({
+        message: 'Results cannot be published before the exam has ended.',
+        canPublishAt: exam.endTime,
+      });
+    }
+
+    const wasPublished = exam.publishResults;
     exam.publishResults = !exam.publishResults;
     await exam.save();
+
+    // ── Send email notifications when publishing ──────────────────────────────
+    let emailResult = null;
+    if (exam.publishResults && !wasPublished) {
+      const studentQuery = {};
+      if (exam.eligibleBranches?.length > 0) studentQuery.branch = { $in: exam.eligibleBranches };
+      if (exam.eligibleYears?.length > 0) studentQuery.year = { $in: exam.eligibleYears };
+      if (exam.eligibleDomains?.length > 0) studentQuery.domains = { $in: exam.eligibleDomains };
+      studentQuery.role = 'student';
+      studentQuery.status = 'active';
+
+      const students = await User.find(studentQuery).select('name email');
+      emailResult = await sendExamPublishNotifications(exam, students);
+    }
 
     res.status(200).json({
       message: `Results ${exam.publishResults ? 'published' : 'unpublished'} successfully.`,
       publishResults: exam.publishResults,
+      emailResult,
     });
   } catch (error) {
     console.error('Publish toggle error:', error);
@@ -275,6 +516,9 @@ router.delete('/:id', authenticate, requireAdmin, async (req, res) => {
     const exam = await Exam.findByIdAndDelete(req.params.id);
     if (!exam) return res.status(404).json({ message: 'Exam not found.' });
 
+    // Cascade delete any submissions for this exam
+    await Submission.deleteMany({ examId: req.params.id });
+
     res.status(200).json({ message: 'Exam deleted successfully.' });
   } catch (error) {
     console.error('Delete exam error:', error);
@@ -291,22 +535,32 @@ router.delete('/:id', authenticate, requireAdmin, async (req, res) => {
  */
 router.get('/student/eligible', authenticate, requireStudent, async (req, res) => {
   try {
-    const { branch, year } = req.user;
+    const { branch, year, domains: studentDomains } = req.user;
     const now = new Date();
 
-    const exams = await Exam.find({
+    // Build query: branch & year must match; if exam has eligibleDomains set,
+    // student must share at least one domain with it
+    const query = {
       eligibleBranches: branch,
       eligibleYears: year,
-    })
+    };
+
+    const exams = await Exam.find(query)
       .select('-questions.correctOptions -questions.acceptedTexts -questions.numericValue -questions.numericTolerance -unlockCode')
       .sort({ startTime: 1 });
 
+    // Post-filter: if exam has eligibleDomains set, student needs a matching domain
+    const filtered = exams.filter(e => {
+      if (!e.eligibleDomains || e.eligibleDomains.length === 0) return true;
+      return (studentDomains || []).some(d => e.eligibleDomains.includes(d));
+    });
+
     // Classify exams into upcoming, live, completed
-    const upcoming = exams.filter((e) => new Date(e.startTime) > now);
-    const live = exams.filter(
+    const upcoming = filtered.filter((e) => new Date(e.startTime) > now);
+    const live = filtered.filter(
       (e) => new Date(e.startTime) <= now && new Date(e.endTime) >= now
     );
-    const completed = exams.filter((e) => new Date(e.endTime) < now);
+    const completed = filtered.filter((e) => new Date(e.endTime) < now);
 
     res.status(200).json({ upcoming, live, completed });
   } catch (error) {
@@ -353,17 +607,50 @@ router.get('/bank/questions', authenticate, requireAdmin, async (req, res) => {
     const { examId } = req.query;
 
     if (examId) {
-      const exam = await Exam.findById(examId).select('title subject questions');
+      const exam = await Exam.findById(examId).select(
+        'title subject isMultiSection sections questions'
+      );
       if (!exam) return res.status(404).json({ message: 'Exam not found.' });
-      return res.status(200).json({ exam });
+
+      // Flatten questions if multi-section so callers get all questions
+      const questions =
+        exam.isMultiSection && exam.sections?.length > 0
+          ? exam.sections.flatMap((s) => s.questions || [])
+          : exam.questions || [];
+
+      return res.status(200).json({
+        exam: {
+          ...exam.toObject(),
+          questions,
+        },
+      });
     }
 
     // Return exam list for the bank selector
     const exams = await Exam.find()
-      .select('title subject examCode createdAt questions')
+      .select('title subject examCode createdAt isMultiSection sections questions')
       .sort({ createdAt: -1 });
 
-    res.status(200).json({ exams });
+    const formattedExams = exams.map((e) => {
+      const qCount =
+        e.isMultiSection && e.sections?.length > 0
+          ? e.sections.reduce((sum, s) => sum + (s.questions?.length || 0), 0)
+          : (e.questions?.length || 0);
+
+      return {
+        _id: e._id,
+        title: e.title,
+        subject: e.subject,
+        examCode: e.examCode,
+        createdAt: e.createdAt,
+        isMultiSection: e.isMultiSection,
+        questionsCount: qCount,
+        questions: e.questions,
+        sections: e.sections,
+      };
+    });
+
+    res.status(200).json({ exams: formattedExams });
   } catch (error) {
     console.error('Question bank error:', error);
     res.status(500).json({ message: 'Server error fetching question bank.' });

@@ -1,9 +1,10 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { startExam, saveAnswers, logViolation, unlockExam, submitExam } from '../../api';
+import { useAuth } from '../../context/AuthContext';
+import { startExam, saveAnswers, logViolation, unlockExam, submitExam, heartbeatExam, nextSection } from '../../api';
 import { initYOLO, startDetectionLoop, stopDetectionLoop, captureSnapshot, getActiveBackend } from '../../utils/yoloDetector';
-import { Clock, Lock, ChevronLeft, ChevronRight, Send, Eye, Shield, AlertTriangle, Maximize } from 'lucide-react';
+import { Clock, Lock, ChevronLeft, ChevronRight, Send, Eye, Shield, AlertTriangle, Maximize, Layers } from 'lucide-react';
 
 const STATUS = { NOT_VISITED: 'nv', ANSWERED: 'ans', NOT_ANSWERED: 'na', REVIEW: 'rev' };
 
@@ -29,6 +30,7 @@ const canLogViolation = (type) => {
 const ExamEnvironment = () => {
   const { examId } = useParams();
   const navigate = useNavigate();
+  const { user } = useAuth();
 
   // ── Init & Loading Phase ──────────────────────────────────────────────────
   const [initPhase, setInitPhase] = useState('loading'); // 'loading' | 'ready'
@@ -47,6 +49,12 @@ const ExamEnvironment = () => {
   const [submitting, setSubmitting] = useState(false);
   const [showSubmitModal, setShowSubmitModal] = useState(false);
 
+  // ── Multi-Section State ───────────────────────────────────────────────────
+  const [currentSection, setCurrentSection] = useState(0);
+  const [sectionTimeRemaining, setSectionTimeRemaining] = useState(null);
+  const [showNextSectionModal, setShowNextSectionModal] = useState(false);
+  const [advancingSection, setAdvancingSection] = useState(false);
+
   // ── Anti-cheat state ──────────────────────────────────────────────────────
   const [violationCount, setViolationCount] = useState(0);
   const [violations, setViolations] = useState([]);
@@ -64,11 +72,14 @@ const ExamEnvironment = () => {
   const webcamStreamRef = useRef(null);
   const detectionHandleRef = useRef(null);
   const autoSaveIntervalRef = useRef(null);
+  const heartbeatIntervalRef = useRef(null);
   const timerTimeoutRef = useRef(null);
+  const sectionTimeoutRef = useRef(null);
   const subRef = useRef(null);
   const ansRef = useRef({});
   const lockedRef = useRef(false);
   const examRef = useRef(null);
+  const currentSectionRef = useRef(0);
 
   // ═══════════════════════════════════════════════════════════════════════════
   // ATTACH WEBCAM STREAM
@@ -177,13 +188,26 @@ const ExamEnvironment = () => {
         lockedRef.current = sub.isLocked || false;
         setViolations(sub.violations || []);
 
-        // Timer
+        // Section initialization
+        const currSec = sub.currentSection || 0;
+        setCurrentSection(currSec);
+        currentSectionRef.current = currSec;
+
+        // Global Timer
         const now = Date.now();
         const end = new Date(sd.exam.endTime).getTime();
         const dur = sd.exam.duration * 60000;
         const started = new Date(sub.startedAt).getTime();
         const elapsed = now - started;
         setTimeRemaining(Math.floor(Math.max(0, Math.min(end - now, dur - elapsed)) / 1000));
+
+        // Multi-Section Isolated Timer
+        if (sd.exam.isMultiSection && sd.exam.sections?.[currSec]) {
+          const secDur = (sd.exam.sections[currSec].duration || 30) * 60000;
+          const secStarted = sub.sectionStartedAt ? new Date(sub.sectionStartedAt).getTime() : started;
+          const secElapsed = now - secStarted;
+          setSectionTimeRemaining(Math.floor(Math.max(0, secDur - secElapsed) / 1000));
+        }
 
         // Check Fullscreen
         setIsFullscreen(!!document.fullscreenElement);
@@ -205,7 +229,28 @@ const ExamEnvironment = () => {
           } catch { /* silent auto-save fail */ }
         }, 25000);
 
-        // 5. Attach Anti-Cheat Listeners
+        // 5. Start Heartbeat (every 5s) — keeps admin live monitor accurate and low latency
+        const sendHeartbeat = async () => {
+          if (!subRef.current) return;
+          try { await heartbeatExam(subRef.current._id); } catch { /* silent */ }
+        };
+        sendHeartbeat(); // immediate ping on load
+        heartbeatIntervalRef.current = setInterval(sendHeartbeat, 5000);
+
+        // 6. Mark disconnect on tab-close / back-navigation via sendBeacon
+        //    (sendBeacon works even when the page is being unloaded)
+        const handleUnload = () => {
+          if (!subRef.current) return;
+          const token = localStorage.getItem('token');
+          const url = `${import.meta.env.VITE_API_URL || 'http://localhost:5000/api'}/submissions/${subRef.current._id}/heartbeat`;
+          // Stop heartbeat immediately — don't send a beacon since we want the
+          // 45s window to naturally expire and remove the student from live view.
+          clearInterval(heartbeatIntervalRef.current);
+        };
+        window.addEventListener('beforeunload', handleUnload);
+        window.addEventListener('pagehide', handleUnload);
+
+        // 7. Attach Anti-Cheat Listeners
         attachAntiCheat();
       } catch (err) {
         console.error('[ExamEnv] Init error:', err);
@@ -214,7 +259,7 @@ const ExamEnvironment = () => {
           err.response?.status === 400 &&
           (err.response?.data?.alreadySubmitted || msg.includes('already submitted'))
         ) {
-          cleanup();
+          clearInterval(heartbeatIntervalRef.current);
           toast('You have already submitted this exam.', { icon: '🔒' });
           navigate(`/student/result/${examId}`, { replace: true });
         } else {
@@ -228,9 +273,20 @@ const ExamEnvironment = () => {
 
     return () => {
       isCancelled = true;
-      cleanup();
+      clearInterval(heartbeatIntervalRef.current);
+      window.removeEventListener('beforeunload', () => clearInterval(heartbeatIntervalRef.current));
+      window.removeEventListener('pagehide', () => clearInterval(heartbeatIntervalRef.current));
+      // Stop webcam
+      if (webcamStreamRef.current) {
+        webcamStreamRef.current.getTracks().forEach((t) => t.stop());
+        webcamStreamRef.current = null;
+      }
+      clearInterval(autoSaveIntervalRef.current);
+      clearTimeout(timerTimeoutRef.current);
+      stopDetectionLoop();
     };
   }, [examId]);
+
 
   // Keep webcam attached whenever videoRef mounts or updates
   useEffect(() => {
@@ -276,7 +332,7 @@ const ExamEnvironment = () => {
   }, [initPhase]);
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // TIMER TICK
+  // GLOBAL TIMER TICK
   // ═══════════════════════════════════════════════════════════════════════════
   useEffect(() => {
     if (timeRemaining === null || initPhase !== 'ready') return;
@@ -289,23 +345,42 @@ const ExamEnvironment = () => {
   }, [timeRemaining, initPhase]);
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // SECTION TIMER TICK
+  // ═══════════════════════════════════════════════════════════════════════════
+  useEffect(() => {
+    if (sectionTimeRemaining === null || initPhase !== 'ready') return;
+    if (sectionTimeRemaining <= 0) {
+      handleAutoAdvanceSection();
+      return;
+    }
+    sectionTimeoutRef.current = setTimeout(() => setSectionTimeRemaining((t) => t - 1), 1000);
+    return () => clearTimeout(sectionTimeoutRef.current);
+  }, [sectionTimeRemaining, initPhase]);
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // VIOLATION LOGGER
   // ═══════════════════════════════════════════════════════════════════════════
   const pushViolation = async (type, desc = '', snap = null) => {
     if (!subRef.current || lockedRef.current) return;
     if (!canLogViolation(type)) return;
 
+    // Store captured image snapshot ONLY for device detection violations
+    let evidenceSnapshot = null;
+    if (type === 'phone-detected' || type === 'device-detected') {
+      evidenceSnapshot = snap || (videoRef.current ? captureSnapshot(videoRef.current) : null);
+    }
+
     try {
       const { data } = await logViolation(subRef.current._id, {
         type,
         description: desc,
-        evidenceSnapshot: snap || (videoRef.current ? captureSnapshot(videoRef.current) : null),
+        evidenceSnapshot,
       });
 
       setViolationCount(data.violationCount);
       setViolations((prev) => [
         ...prev,
-        { type, description: desc, timestamp: new Date(), evidenceSnapshot: snap },
+        { type, description: desc, timestamp: new Date(), evidenceSnapshot },
       ]);
 
       if (data.isLocked) {
@@ -414,10 +489,14 @@ const ExamEnvironment = () => {
   // ═══════════════════════════════════════════════════════════════════════════
   // CLEANUP
   // ═══════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════════
+  // CLEANUP
+  // ═══════════════════════════════════════════════════════════════════════════
   const cleanup = useCallback(() => {
     stopDetectionLoop();
     clearInterval(autoSaveIntervalRef.current);
     clearTimeout(timerTimeoutRef.current);
+    clearTimeout(sectionTimeoutRef.current);
     webcamStreamRef.current?.getTracks().forEach((t) => t.stop());
     window.__acCleanup?.();
     try {
@@ -459,6 +538,69 @@ const ExamEnvironment = () => {
     } catch {
       toast.error('Failed to submit exam. Please try again.');
       setSubmitting(false);
+    }
+  };
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // MULTI-SECTION PROGRESSION
+  // ═══════════════════════════════════════════════════════════════════════════
+  const handleAutoAdvanceSection = useCallback(async () => {
+    if (!examRef.current?.isMultiSection || !subRef.current) return;
+    const totalSecs = examRef.current.sections?.length || 0;
+    const curSec = currentSectionRef.current;
+    if (curSec >= totalSecs - 1) {
+      handleAutoSubmit();
+    } else {
+      try {
+        await saveAnswers(
+          subRef.current._id,
+          Object.entries(ansRef.current).map(([qid, a]) => ({
+            questionId: qid,
+            selectedOptions: a.selectedOptions || [],
+            textResponse: a.textResponse || '',
+          }))
+        );
+        const { data } = await nextSection(subRef.current._id, 0);
+        setCurrentSection(data.currentSection);
+        currentSectionRef.current = data.currentSection;
+        setCurIdx(0);
+        const nextSecDur = (examRef.current.sections[data.currentSection]?.duration || 30) * 60;
+        setSectionTimeRemaining(nextSecDur);
+        toast.success(
+          `Section time completed. Moved to Section ${data.currentSection + 1}: ${examRef.current.sections[data.currentSection]?.title}`
+        );
+      } catch (err) {
+        console.error('Auto next section error:', err);
+      }
+    }
+  }, [handleAutoSubmit]);
+
+  const handleManualNextSection = async () => {
+    if (!subRef.current || advancingSection) return;
+    setAdvancingSection(true);
+    try {
+      await saveAnswers(
+        subRef.current._id,
+        Object.entries(ansRef.current).map(([qid, a]) => ({
+          questionId: qid,
+          selectedOptions: a.selectedOptions || [],
+          textResponse: a.textResponse || '',
+        }))
+      );
+      const { data } = await nextSection(subRef.current._id, sectionTimeRemaining || 0);
+      setCurrentSection(data.currentSection);
+      currentSectionRef.current = data.currentSection;
+      setCurIdx(0);
+      const nextSecDur = (examRef.current.sections[data.currentSection]?.duration || 30) * 60;
+      setSectionTimeRemaining(nextSecDur);
+      setShowNextSectionModal(false);
+      toast.success(
+        `Entered Section ${data.currentSection + 1}: ${examRef.current.sections[data.currentSection]?.title}`
+      );
+    } catch (err) {
+      toast.error('Failed to advance to next section. Please try again.');
+    } finally {
+      setAdvancingSection(false);
     }
   };
 
@@ -518,7 +660,7 @@ const ExamEnvironment = () => {
     }));
 
   const formatTime = (s) => {
-    if (s === null) return '--:--';
+    if (s === null || s === undefined) return '--:--';
     const m = Math.floor(s / 60);
     return `${String(m).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
   };
@@ -547,10 +689,14 @@ const ExamEnvironment = () => {
     );
   }
 
-  const qs = exam?.questions || [];
+  const isMulti = exam?.isMultiSection && exam?.sections?.length > 0;
+  const currentSectionData = isMulti ? exam.sections[currentSection] : null;
+  const qs = isMulti ? (currentSectionData?.questions || []) : (exam?.questions || []);
   const curQ = qs[curIdx];
   const curAns = curQ ? answers[curQ._id] || {} : {};
-  const answeredCount = Object.values(statuses).filter((s) => s === STATUS.ANSWERED).length;
+  const isLastSection = !isMulti || (currentSection >= (exam?.sections?.length || 1) - 1);
+  const answeredCount = qs.filter((q) => statuses[q._id] === STATUS.ANSWERED).length;
+
   const timerCls =
     timeRemaining === null
       ? 'text-slate-600'
@@ -559,6 +705,15 @@ const ExamEnvironment = () => {
       : timeRemaining < 600
       ? 'text-amber-600'
       : 'text-slate-800';
+
+  const secTimerCls =
+    sectionTimeRemaining === null
+      ? 'text-purple-700'
+      : sectionTimeRemaining < 180
+      ? 'text-red-600 animate-pulse font-extrabold'
+      : sectionTimeRemaining < 300
+      ? 'text-amber-600'
+      : 'text-purple-700';
 
   return (
     <div className="fixed inset-0 bg-white flex flex-col overflow-hidden select-none">
@@ -643,6 +798,50 @@ const ExamEnvironment = () => {
         </div>
       )}
 
+      {/* ── NEXT SECTION CONFIRM MODAL ───────────────────────────────────────── */}
+      {showNextSectionModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-40 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 animate-slide-up">
+            <div className="w-12 h-12 rounded-xl bg-purple-100 text-purple-700 flex items-center justify-center mb-3">
+              <Layers className="w-6 h-6" />
+            </div>
+            <h3 className="text-lg font-bold text-slate-800 mb-1">
+              Proceed to Next Section?
+            </h3>
+            <p className="text-sm font-medium text-purple-800 mb-3">
+              Completing: {currentSectionData?.title}
+            </p>
+            <div className="space-y-2 text-xs text-slate-600 bg-amber-50 border border-amber-200 rounded-xl p-3.5 mb-5">
+              <p className="text-amber-900 font-semibold flex items-center gap-1.5">
+                <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                Important: One-Way Progression
+              </p>
+              <p>
+                Once you proceed to the next section, your answers for this section will be finalized and locked. You <strong>cannot navigate back</strong> to this section later.
+              </p>
+              <p>
+                You have answered <strong>{answeredCount}</strong> of <strong>{qs.length}</strong> questions in this section.
+              </p>
+            </div>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setShowNextSectionModal(false)}
+                className="btn-ghost"
+              >
+                Return to Questions
+              </button>
+              <button
+                onClick={handleManualNextSection}
+                disabled={advancingSection}
+                className="btn-primary bg-purple-600 hover:bg-purple-700"
+              >
+                {advancingSection ? <div className="spinner" /> : 'Yes, Proceed to Next Section'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── SUBMIT CONFIRM MODAL ─────────────────────────────────────────────── */}
       {showSubmitModal && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-40 flex items-center justify-center p-4">
@@ -651,14 +850,14 @@ const ExamEnvironment = () => {
             <div className="space-y-2 text-sm text-slate-600 mb-5">
               <p>
                 You've answered <strong className="text-slate-800">{answeredCount}</strong> of{' '}
-                <strong className="text-slate-800">{qs.length}</strong> questions.
+                <strong className="text-slate-800">{qs.length}</strong> questions in this section.
               </p>
               {answeredCount < qs.length && (
                 <p className="text-amber-600 font-medium">
-                  ⚠ {qs.length - answeredCount} unanswered question{qs.length - answeredCount !== 1 ? 's' : ''} will receive 0 marks.
+                  ⚠ Unanswered questions will receive 0 marks.
                 </p>
               )}
-              <p>Are you sure you want to finalize and submit?</p>
+              <p>Are you sure you want to finalize and submit your entire exam?</p>
             </div>
             <div className="flex gap-3 justify-end">
               <button onClick={() => setShowSubmitModal(false)} className="btn-ghost">
@@ -681,11 +880,17 @@ const ExamEnvironment = () => {
       <div className="h-14 bg-white border-b border-slate-100 flex items-center justify-between px-5 flex-shrink-0 shadow-sm z-10">
         <div className="flex items-center gap-3">
           <Shield className="w-5 h-5 text-primary-600 flex-shrink-0" />
-          <span className="font-semibold text-slate-800 text-sm truncate max-w-xs">{exam?.title}</span>
-          <span className="text-xs text-slate-400 font-mono hidden sm:inline">{exam?.examCode}</span>
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-slate-800 text-sm truncate max-w-xs">{exam?.title}</span>
+            {isMulti && (
+              <span className="badge badge-purple text-xs font-semibold flex items-center gap-1">
+                <Layers className="w-3 h-3" /> Sec {currentSection + 1}/{exam.sections.length}
+              </span>
+            )}
+          </div>
         </div>
 
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3 sm:gap-4">
           {!isFullscreen && (
             <button
               onClick={enterFullscreen}
@@ -694,13 +899,27 @@ const ExamEnvironment = () => {
               <Maximize className="w-3.5 h-3.5" /> Fullscreen
             </button>
           )}
+
           {phoneDetected && (
             <span className="badge badge-red animate-pulse text-xs">⚠ Device Detected!</span>
           )}
-          <div className={`flex items-center gap-1.5 font-mono font-bold text-base ${timerCls}`}>
-            <Clock className="w-4 h-4" />
+
+          {/* Section Isolated Timer if Multi-Section */}
+          {isMulti && (
+            <div className={`flex items-center gap-1 font-mono font-bold text-sm bg-purple-50 px-2.5 py-1 rounded-lg border border-purple-200 ${secTimerCls}`} title="Section Remaining Time">
+              <Clock className="w-3.5 h-3.5" />
+              <span className="text-xs font-normal text-purple-600 mr-0.5">Section:</span>
+              {formatTime(sectionTimeRemaining)}
+            </div>
+          )}
+
+          {/* Global Exam Timer */}
+          <div className={`flex items-center gap-1 font-mono font-bold text-sm bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200 ${timerCls}`} title="Total Exam Remaining Time">
+            <Clock className="w-3.5 h-3.5" />
+            <span className="text-xs font-normal text-slate-500 mr-0.5">Total:</span>
             {formatTime(timeRemaining)}
           </div>
+
           <div
             className={`badge text-xs font-semibold ${
               violationCount === 0
@@ -712,40 +931,75 @@ const ExamEnvironment = () => {
           >
             {violationCount}/{exam?.violationThreshold || 3} Violations
           </div>
-          <button id="submit-btn" onClick={() => setShowSubmitModal(true)} className="btn-primary btn-sm">
-            <Send className="w-3.5 h-3.5" /> Submit
-          </button>
+
+          {isLastSection ? (
+            <button id="submit-btn" onClick={() => setShowSubmitModal(true)} className="btn-primary btn-sm">
+              <Send className="w-3.5 h-3.5" /> Submit
+            </button>
+          ) : (
+            <button
+              id="next-section-header-btn"
+              onClick={() => setShowNextSectionModal(true)}
+              className="btn-primary btn-sm bg-purple-600 hover:bg-purple-700"
+            >
+              Next Section <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       </div>
 
       {/* ── MAIN EXAM LAYOUT ─────────────────────────────────────────────────── */}
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden relative">
+        {/* ── SECURITY WATERMARK OVERLAY ── */}
+        <div className="exam-watermark-container pointer-events-none select-none z-0">
+          {Array.from({ length: 28 }).map((_, i) => (
+            <span key={i} className="exam-watermark-item">
+              {user?.name || 'STUDENT'} • {user?.rollNumber || user?.email || 'RGUKT'} • {exam?.examCode || 'EXAM'}
+            </span>
+          ))}
+        </div>
+
         {/* ── LEFT: QUESTION VIEWER & NAVIGATION ───────────────────────────── */}
-        <div className="flex-1 flex flex-col overflow-hidden">
-          <div className="flex-1 overflow-y-auto p-6">
+        <div className="flex-1 flex flex-col overflow-hidden relative z-10">
+          {/* Section banner header if multi-section */}
+          {isMulti && (
+            <div className="px-6 py-2.5 bg-purple-50/80 border-b border-purple-100 flex items-center justify-between text-xs backdrop-blur-sm">
+              <span className="font-semibold text-purple-900 flex items-center gap-1.5">
+                <Layers className="w-4 h-4 text-purple-600" />
+                Section {currentSection + 1} of {exam.sections.length}: <strong>{currentSectionData?.title}</strong>
+              </span>
+              <span className="text-purple-700 font-medium">
+                {qs.length} Questions in this section
+              </span>
+            </div>
+          )}
+
+          <div className="flex-1 overflow-y-auto p-6 md:p-8">
             {curQ ? (
-              <div className="max-w-3xl mx-auto">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-semibold text-slate-500">
-                      Q{curIdx + 1} of {qs.length}
+              <div className="max-w-3xl mx-auto space-y-5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <span className="text-base font-bold text-slate-700">
+                      Question {curIdx + 1} <span className="text-slate-400 font-normal text-sm">of {qs.length}</span>
                     </span>
                     <span
-                      className={`badge text-xs ${
+                      className={`badge text-xs font-semibold px-2.5 py-0.5 ${
                         curQ.type === 'MCQ' ? 'badge-blue' : curQ.type === 'MSQ' ? 'badge-yellow' : 'badge-gray'
                       }`}
                     >
                       {curQ.type}
                     </span>
-                    <span className="badge badge-gray text-xs">+{exam?.marksPerQuestion}m</span>
+                    <span className="badge badge-gray text-xs">+{exam?.marksPerQuestion} mark</span>
                     {exam?.negativeMarking && (
-                      <span className="badge badge-red text-xs">−{exam?.negativeMarkValue}m</span>
+                      <span className="badge badge-red text-xs">−{exam?.negativeMarkValue} mark</span>
                     )}
                   </div>
                   <button
                     onClick={() => toggleReview(curQ._id)}
-                    className={`btn-ghost btn-sm text-xs ${
-                      statuses[curQ._id] === STATUS.REVIEW ? 'text-amber-600 bg-amber-50' : 'text-slate-500'
+                    className={`btn-ghost btn-sm text-xs font-semibold px-3 py-1.5 rounded-xl border transition-all ${
+                      statuses[curQ._id] === STATUS.REVIEW
+                        ? 'text-amber-700 bg-amber-100 border-amber-300 shadow-sm'
+                        : 'text-slate-600 border-slate-200 hover:bg-slate-100'
                     }`}
                   >
                     ⭐ {statuses[curQ._id] === STATUS.REVIEW ? 'Marked for Review' : 'Mark for Review'}
@@ -753,100 +1007,112 @@ const ExamEnvironment = () => {
                 </div>
 
                 {/* Question Box */}
-                <div className="card mb-4">
-                  <div className="p-5">
-                    <p className="text-slate-800 font-medium leading-relaxed text-base">{curQ.questionText}</p>
+                <div className="card shadow-sm border border-slate-200/80">
+                  <div className="p-6">
+                    <p className="text-slate-800 font-semibold leading-relaxed text-lg">{curQ.questionText}</p>
                     {curQ.imageUrl && (
                       <img
                         src={curQ.imageUrl}
                         alt="Question Diagram"
-                        className="mt-4 max-h-64 rounded-xl object-contain border border-slate-100"
+                        className="mt-4 max-h-72 rounded-xl object-contain border border-slate-100 shadow-sm"
                       />
                     )}
                   </div>
                 </div>
 
                 {/* Answer Options Box */}
-                <div className="card">
-                  <div className="p-5 space-y-3">
+                <div className="card shadow-sm border border-slate-200/80">
+                  <div className="p-6 space-y-3.5">
                     {/* MCQ */}
                     {curQ.type === 'MCQ' &&
-                      curQ.options?.map((opt, idx) => (
-                        <label
-                          key={idx}
-                          className={`flex items-center gap-3 p-3.5 rounded-xl border-2 cursor-pointer transition-all ${
-                            curAns.selectedOptions?.includes(idx)
-                              ? 'border-primary-500 bg-primary-50'
-                              : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'
-                          }`}
-                        >
-                          <input
-                            type="radio"
-                            name={`mcq-${curQ._id}`}
-                            checked={curAns.selectedOptions?.includes(idx) || false}
-                            onChange={() => toggleMCQ(curQ._id, idx)}
-                            className="w-4 h-4 text-primary-600"
-                          />
-                          <span
-                            className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 ${
-                              curAns.selectedOptions?.includes(idx)
-                                ? 'bg-primary-600 text-white'
-                                : 'bg-slate-100 text-slate-500'
-                            }`}
-                          >
-                            {String.fromCharCode(65 + idx)}
-                          </span>
-                          <span className="text-slate-700 text-sm">{opt}</span>
-                        </label>
-                      ))}
-
-                    {/* MSQ */}
-                    {curQ.type === 'MSQ' && (
-                      <>
-                        <p className="text-xs text-slate-500 font-medium mb-1">Select all correct options</p>
-                        {curQ.options?.map((opt, idx) => (
+                      curQ.options?.map((opt, idx) => {
+                        const isSelected = curAns.selectedOptions?.includes(idx);
+                        return (
                           <label
                             key={idx}
-                            className={`flex items-center gap-3 p-3.5 rounded-xl border-2 cursor-pointer transition-all ${
-                              curAns.selectedOptions?.includes(idx)
-                                ? 'border-primary-500 bg-primary-50'
+                            className={`flex items-center gap-3.5 p-4 rounded-2xl border-2 cursor-pointer transition-all ${
+                              isSelected
+                                ? 'border-primary-600 bg-primary-50/70 shadow-sm ring-1 ring-primary-300'
                                 : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'
                             }`}
                           >
                             <input
-                              type="checkbox"
-                              checked={curAns.selectedOptions?.includes(idx) || false}
-                              onChange={() => toggleMSQ(curQ._id, idx)}
-                              className="w-4 h-4 text-primary-600 rounded"
+                              type="radio"
+                              name={`mcq-${curQ._id}`}
+                              checked={isSelected || false}
+                              onChange={() => toggleMCQ(curQ._id, idx)}
+                              className="w-4 h-4 text-primary-600 focus:ring-primary-500"
                             />
                             <span
-                              className={`w-6 h-6 rounded flex items-center justify-center text-xs font-bold flex-shrink-0 ${
-                                curAns.selectedOptions?.includes(idx)
-                                  ? 'bg-primary-600 text-white'
-                                  : 'bg-slate-100 text-slate-500'
+                              className={`w-7 h-7 rounded-xl flex items-center justify-center text-xs font-bold flex-shrink-0 transition-colors ${
+                                isSelected
+                                  ? 'bg-primary-600 text-white shadow-sm'
+                                  : 'bg-slate-100 text-slate-600'
                               }`}
                             >
                               {String.fromCharCode(65 + idx)}
                             </span>
-                            <span className="text-slate-700 text-sm">{opt}</span>
+                            <span className={`text-sm ${isSelected ? 'font-semibold text-slate-900' : 'text-slate-700'}`}>
+                              {opt}
+                            </span>
                           </label>
-                        ))}
+                        );
+                      })}
+
+                    {/* MSQ */}
+                    {curQ.type === 'MSQ' && (
+                      <>
+                        <p className="text-xs text-slate-500 font-medium mb-1 flex items-center gap-1">
+                          <span>☑ Select all correct options that apply:</span>
+                        </p>
+                        {curQ.options?.map((opt, idx) => {
+                          const isSelected = curAns.selectedOptions?.includes(idx);
+                          return (
+                            <label
+                              key={idx}
+                              className={`flex items-center gap-3.5 p-4 rounded-2xl border-2 cursor-pointer transition-all ${
+                                isSelected
+                                  ? 'border-primary-600 bg-primary-50/70 shadow-sm ring-1 ring-primary-300'
+                                  : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isSelected || false}
+                                onChange={() => toggleMSQ(curQ._id, idx)}
+                                className="w-4 h-4 text-primary-600 rounded focus:ring-primary-500"
+                              />
+                              <span
+                                className={`w-7 h-7 rounded-xl flex items-center justify-center text-xs font-bold flex-shrink-0 transition-colors ${
+                                  isSelected
+                                    ? 'bg-primary-600 text-white shadow-sm'
+                                    : 'bg-slate-100 text-slate-600'
+                                }`}
+                              >
+                                {String.fromCharCode(65 + idx)}
+                              </span>
+                              <span className={`text-sm ${isSelected ? 'font-semibold text-slate-900' : 'text-slate-700'}`}>
+                                {opt}
+                              </span>
+                            </label>
+                          );
+                        })}
                       </>
                     )}
 
                     {/* FILL_BLANK */}
                     {curQ.type === 'FILL_BLANK' && (
-                      <div>
-                        <label className="form-label">Type your answer</label>
+                      <div className="space-y-2">
+                        <label className="form-label font-medium text-slate-700">Type your answer below:</label>
                         <input
                           type={curQ.fillBlankType === 'number' ? 'number' : 'text'}
                           step="any"
                           value={curAns.textResponse || ''}
                           onChange={(e) => handleAnswer(curQ._id, 'text', e.target.value)}
                           placeholder={
-                            curQ.fillBlankType === 'number' ? 'Enter numerical value...' : 'Type answer...'
+                            curQ.fillBlankType === 'number' ? 'Enter numerical value (e.g. 42 or 3.14)...' : 'Type exact answer...'
                           }
-                          className="form-input max-w-sm"
+                          className="form-input max-w-md text-base py-3 px-4 font-mono"
                           autoComplete="off"
                         />
                       </div>
@@ -854,41 +1120,54 @@ const ExamEnvironment = () => {
                   </div>
                 </div>
 
-                {/* Bottom Navigation */}
-                <div className="flex justify-between items-center mt-5">
+                {/* Bottom Navigation Toolbar */}
+                <div className="flex flex-col sm:flex-row justify-between items-center gap-3 pt-2">
                   <button
                     id="prev-q"
                     onClick={() => setCurIdx((i) => Math.max(0, i - 1))}
                     disabled={curIdx === 0}
-                    className="btn-secondary"
+                    className="btn-secondary px-6 py-2.5 text-sm font-semibold rounded-xl w-full sm:w-auto"
                   >
-                    <ChevronLeft className="w-4 h-4" /> Previous
+                    <ChevronLeft className="w-4 h-4" /> Previous Question
                   </button>
-                  <span className="text-xs text-slate-400">
-                    {answeredCount} of {qs.length} answered
+
+                  <span className="text-xs text-slate-500 font-medium order-first sm:order-none">
+                    <strong>{answeredCount}</strong> of <strong>{qs.length}</strong> questions answered
                   </span>
-                  <button
-                    id="next-q"
-                    onClick={() => setCurIdx((i) => Math.min(qs.length - 1, i + 1))}
-                    disabled={curIdx === qs.length - 1}
-                    className="btn-primary"
-                  >
-                    Next <ChevronRight className="w-4 h-4" />
-                  </button>
+
+                  <div className="flex items-center gap-2.5 w-full sm:w-auto justify-end">
+                    <button
+                      id="next-q"
+                      onClick={() => setCurIdx((i) => Math.min(qs.length - 1, i + 1))}
+                      disabled={curIdx === qs.length - 1}
+                      className="btn-secondary px-6 py-2.5 text-sm font-semibold rounded-xl flex-1 sm:flex-initial"
+                    >
+                      Next Question <ChevronRight className="w-4 h-4" />
+                    </button>
+
+                    {!isLastSection && curIdx === qs.length - 1 && (
+                      <button
+                        onClick={() => setShowNextSectionModal(true)}
+                        className="btn-primary px-6 py-2.5 text-sm font-bold bg-purple-600 hover:bg-purple-700 rounded-xl shadow-md flex-1 sm:flex-initial"
+                      >
+                        Next Section <ChevronRight className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
             ) : (
-              <div className="text-center text-slate-400 py-20">No questions available.</div>
+              <div className="text-center text-slate-400 py-20">No questions available in this section.</div>
             )}
           </div>
         </div>
 
         {/* ── RIGHT: LIVE PROCTOR CAMERA & PALETTE ─────────────────────────── */}
-        <div className="w-64 bg-white border-l border-slate-100 flex flex-col overflow-hidden flex-shrink-0">
+        <div className="w-72 bg-white border-l border-slate-200 flex flex-col overflow-hidden flex-shrink-0 relative z-10 shadow-sm">
           {/* Live Webcam Tile */}
-          <div className="p-3 border-b border-slate-100">
+          <div className="p-3.5 border-b border-slate-100 bg-slate-50/50">
             <div
-              className={`relative rounded-xl overflow-hidden bg-slate-900 ${
+              className={`relative rounded-2xl overflow-hidden bg-slate-900 shadow-sm ${
                 phoneDetected ? 'ring-2 ring-red-500 shadow-lg shadow-red-500/30' : 'ring-1 ring-slate-200'
               }`}
               style={{ aspectRatio: '4/3' }}
@@ -903,10 +1182,10 @@ const ExamEnvironment = () => {
                 muted
                 className="w-full h-full object-cover"
               />
-              <div className="absolute bottom-1.5 left-1.5">
+              <div className="absolute bottom-2 left-2">
                 <span
-                  className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                    phoneDetected ? 'bg-red-600 text-white' : 'bg-emerald-600/85 text-white'
+                  className={`text-xs font-semibold px-2.5 py-0.5 rounded-full ${
+                    phoneDetected ? 'bg-red-600 text-white' : 'bg-emerald-600/90 text-white backdrop-blur-sm'
                   }`}
                 >
                   {phoneDetected ? '⚠ Device' : '● Live Face'}
@@ -914,45 +1193,66 @@ const ExamEnvironment = () => {
               </div>
             </div>
             {phoneDetected && (
-              <p className="text-red-600 text-xs font-semibold mt-1.5 text-center animate-pulse">
+              <p className="text-red-600 text-xs font-bold mt-1.5 text-center animate-pulse">
                 Unauthorized device detected!
               </p>
             )}
           </div>
 
-          {/* Palette */}
-          <div className="flex-1 overflow-y-auto p-3">
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
-              Question Palette
-            </p>
-
-            <div className="space-y-1 mb-3 text-xs">
-              {[
-                ['bg-slate-100 text-slate-400', 'Not Visited'],
-                ['bg-emerald-500 text-white', 'Answered'],
-                ['bg-red-100 text-red-600', 'Not Answered'],
-                ['bg-amber-400 text-white', 'Review'],
-              ].map(([cls, label]) => (
-                <div key={label} className="flex items-center gap-2">
-                  <span className={`w-4 h-4 rounded text-xs flex items-center justify-center flex-shrink-0 ${cls}`} />
-                  <span className="text-slate-500">{label}</span>
-                </div>
-              ))}
+          {/* Question Palette with Enlarged Controls */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                {isMulti ? `Section ${currentSection + 1} Palette` : 'Question Palette'}
+              </p>
+              <span className="text-xs text-slate-400 font-medium">{qs.length} Total</span>
             </div>
 
-            <div className="grid grid-cols-5 gap-1.5">
+            {/* Legend */}
+            <div className="grid grid-cols-2 gap-1.5 text-[11px] bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+              <div className="flex items-center gap-1.5">
+                <span className="w-3 h-3 rounded bg-slate-200 flex-shrink-0" />
+                <span className="text-slate-600">Not Visited</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-3 h-3 rounded bg-emerald-500 flex-shrink-0" />
+                <span className="text-slate-600">Answered</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-3 h-3 rounded bg-red-100 border border-red-200 flex-shrink-0" />
+                <span className="text-slate-600">Not Answered</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-3 h-3 rounded bg-amber-400 flex-shrink-0" />
+                <span className="text-slate-600">Marked Review</span>
+              </div>
+            </div>
+
+            {/* Enlarged Palette Grid */}
+            <div className="grid grid-cols-5 gap-2 pt-1">
               {qs.map((q, idx) => {
                 const st = statuses[q._id] || STATUS.NOT_VISITED;
                 const isCur = idx === curIdx;
-                let cls =
-                  'w-full aspect-square rounded text-xs font-semibold flex items-center justify-center cursor-pointer transition-all ';
-                if (isCur) cls += 'bg-primary-600 text-white ring-2 ring-primary-300 scale-110';
-                else if (st === STATUS.ANSWERED) cls += 'bg-emerald-500 text-white hover:bg-emerald-600';
-                else if (st === STATUS.REVIEW) cls += 'bg-amber-400 text-white hover:bg-amber-500';
-                else if (st === STATUS.NOT_ANSWERED) cls += 'bg-red-100 text-red-600 hover:bg-red-200';
-                else cls += 'bg-slate-100 text-slate-500 hover:bg-slate-200';
+
+                let btnClass = 'palette-not-visited';
+                if (isCur) {
+                  btnClass = 'palette-current';
+                } else if (st === STATUS.ANSWERED) {
+                  btnClass = 'palette-answered';
+                } else if (st === STATUS.REVIEW) {
+                  btnClass = 'palette-review';
+                } else if (st === STATUS.NOT_ANSWERED) {
+                  btnClass = 'palette-not-answered';
+                }
+
                 return (
-                  <button key={q._id} onClick={() => setCurIdx(idx)} className={cls}>
+                  <button
+                    key={q._id}
+                    id={`palette-q-${idx + 1}`}
+                    onClick={() => setCurIdx(idx)}
+                    className={btnClass}
+                    title={`Question ${idx + 1}`}
+                  >
                     {idx + 1}
                   </button>
                 );
@@ -960,16 +1260,24 @@ const ExamEnvironment = () => {
             </div>
           </div>
 
-          {/* Answered Counter */}
-          <div className="p-3 border-t border-slate-100 bg-slate-50">
-            <div className="grid grid-cols-2 gap-2 text-xs text-center">
-              <div className="bg-white rounded-xl p-2.5 shadow-sm">
-                <p className="font-bold text-emerald-600 text-lg">{answeredCount}</p>
-                <p className="text-slate-400">Answered</p>
+          {/* Section Indicator and Answered Counter */}
+          <div className="p-3.5 border-t border-slate-100 bg-slate-50 space-y-2">
+            {isMulti && (
+              <div className="text-xs bg-white p-2.5 rounded-xl border border-slate-200 text-center shadow-sm">
+                <p className="text-slate-400 font-medium text-[10px] uppercase tracking-wider">Active Section</p>
+                <p className="font-bold text-purple-900 truncate mt-0.5">
+                  {currentSection + 1}. {currentSectionData?.title}
+                </p>
               </div>
-              <div className="bg-white rounded-xl p-2.5 shadow-sm">
-                <p className="font-bold text-slate-500 text-lg">{qs.length - answeredCount}</p>
-                <p className="text-slate-400">Remaining</p>
+            )}
+            <div className="grid grid-cols-2 gap-2 text-xs text-center">
+              <div className="bg-white rounded-xl p-2.5 shadow-sm border border-slate-100">
+                <p className="font-extrabold text-emerald-600 text-xl">{answeredCount}</p>
+                <p className="text-slate-400 text-[11px] font-medium">Answered</p>
+              </div>
+              <div className="bg-white rounded-xl p-2.5 shadow-sm border border-slate-100">
+                <p className="font-extrabold text-slate-600 text-xl">{qs.length - answeredCount}</p>
+                <p className="text-slate-400 text-[11px] font-medium">Remaining</p>
               </div>
             </div>
           </div>

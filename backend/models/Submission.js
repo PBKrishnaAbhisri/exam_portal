@@ -106,6 +106,14 @@ const submissionSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    unlockedAtViolationCount: {
+      type: Number,
+      default: 0,
+    },
+    unlockCount: {
+      type: Number,
+      default: 0,
+    },
     status: {
       type: String,
       enum: ['started', 'submitted', 'locked', 'auto-submitted'],
@@ -137,6 +145,24 @@ const submissionSchema = new mongoose.Schema(
     questionOrder: {
       type: [mongoose.Schema.Types.ObjectId],
       default: [],
+    },
+    // Section tracking for multi-section exams
+    currentSection: {
+      type: Number,
+      default: 0,
+    },
+    sectionStartedAt: {
+      type: Date,
+      default: null,
+    },
+    sectionTimeRemaining: {
+      type: [Number], // recorded remaining seconds when advancing/finishing sections
+      default: [],
+    },
+    // Heartbeat for live disconnect detection — updated every ~20s by client
+    lastHeartbeatAt: {
+      type: Date,
+      default: null,
     },
   },
   {

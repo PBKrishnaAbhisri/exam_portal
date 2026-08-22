@@ -140,23 +140,22 @@
   }
 
   .palette-btn {
-    @apply w-9 h-9 rounded-lg text-xs font-semibold flex items-center justify-center cursor-pointer
-    transition-all duration-150 hover:scale-110;
+    @apply w-full aspect-square rounded-xl text-sm font-bold flex items-center justify-center cursor-pointer transition-all duration-150;
   }
   .palette-not-visited {
-    @apply palette-btn bg-slate-100 text-slate-500;
+    @apply palette-btn bg-slate-100 text-slate-500 hover:bg-slate-200 border border-slate-200/60;
   }
   .palette-answered {
-    @apply palette-btn bg-emerald-500 text-white;
+    @apply palette-btn bg-emerald-500 text-white hover:bg-emerald-600 shadow-sm shadow-emerald-500/20;
   }
   .palette-not-answered {
-    @apply palette-btn bg-red-100 text-red-600 border border-red-200;
+    @apply palette-btn bg-red-100 text-red-600 border border-red-200 hover:bg-red-200;
   }
   .palette-review {
-    @apply palette-btn bg-amber-400 text-white;
+    @apply palette-btn bg-amber-400 text-white hover:bg-amber-500 shadow-sm shadow-amber-400/20;
   }
   .palette-current {
-    @apply palette-btn bg-primary-600 text-white ring-2 ring-primary-300 ring-offset-1;
+    @apply palette-btn bg-primary-600 text-white ring-2 ring-primary-400 ring-offset-2 scale-105 shadow-md shadow-primary-600/30;
   }
 
   .modal-overlay {
@@ -176,6 +175,14 @@
 
   .webcam-container {
     @apply relative rounded-xl overflow-hidden bg-slate-900 aspect-video;
+  }
+
+  /* ── DIAGONAL SECURITY WATERMARK ── */
+  .exam-watermark-container {
+    @apply pointer-events-none select-none absolute inset-0 overflow-hidden z-0 flex flex-wrap items-center justify-around gap-16 p-8 opacity-[0.04] sm:opacity-[0.055];
+  }
+  .exam-watermark-item {
+    @apply transform -rotate-12 text-slate-900 font-bold text-sm sm:text-base tracking-widest uppercase whitespace-nowrap;
   }
 }
 

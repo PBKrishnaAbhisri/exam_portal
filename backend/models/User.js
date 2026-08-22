@@ -48,6 +48,17 @@ const userSchema = new mongoose.Schema(
       min: 0,
       max: 10,
     },
+    // Domain interests (set at signup, editable by student)
+    domains: {
+      type: [String],
+      default: [],
+    },
+    // Account status — updated by May 1st cron for graduating batches
+    status: {
+      type: String,
+      enum: ['active', 'alumni'],
+      default: 'active',
+    },
   },
   {
     timestamps: true,

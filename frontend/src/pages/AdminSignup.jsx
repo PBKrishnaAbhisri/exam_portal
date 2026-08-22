@@ -13,6 +13,12 @@ const AdminSignup = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+
+    if (!/@rguktn\.ac\.in$/i.test(form.email)) {
+      toast.error('Admin email must be a @rguktn.ac.in address (e.g. faculty@rguktn.ac.in)');
+      return;
+    }
+
     setLoading(true);
     try {
       const { data } = await signupAdmin(form);
@@ -29,7 +35,7 @@ const AdminSignup = () => {
 
   const fields = [
     { id: 'a-name', name: 'name', label: 'Full Name', type: 'text', placeholder: 'Dr. Jane Smith', Icon: User },
-    { id: 'a-email', name: 'email', label: 'Email Address', type: 'email', placeholder: 'faculty@college.edu', Icon: Mail },
+    { id: 'a-email', name: 'email', label: 'Email Address', type: 'email', placeholder: 'faculty@rguktn.ac.in', Icon: Mail },
     { id: 'a-password', name: 'password', label: 'Password', type: 'password', placeholder: '••••••••', Icon: Lock },
   ];
 
@@ -60,6 +66,9 @@ const AdminSignup = () => {
                     onChange={(e) => setForm({ ...form, [name]: e.target.value })} placeholder={placeholder}
                     className="w-full pl-10 pr-4 py-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-primary-500/60 transition-all" />
                 </div>
+                {name === 'email' && (
+                  <p className="text-slate-400 text-xs mt-1">Must be a @rguktn.ac.in email address</p>
+                )}
               </div>
             ))}
 

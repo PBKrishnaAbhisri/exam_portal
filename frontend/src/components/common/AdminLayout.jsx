@@ -1,16 +1,16 @@
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import toast from 'react-hot-toast';
-import { GraduationCap, LayoutDashboard, FileText, Plus, Users, ClipboardCheck, LogOut, ShieldCheck, BookOpen } from 'lucide-react';
+import { GraduationCap, LayoutDashboard, FileText, Plus, Users, ClipboardCheck, LogOut, ShieldCheck, BookOpen, Trophy } from 'lucide-react';
 
 const navItems = [
   { to: '/admin', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/admin/exams', label: 'All Exams', icon: FileText },
   { to: '/admin/exams/create', label: 'Create Exam', icon: Plus },
-  { to: '/admin/exam-bank', label: 'Exam Bank', icon: BookOpen },
   { to: '/admin/live', label: 'Live Monitor', icon: ShieldCheck },
   { to: '/admin/review', label: 'Manual Review', icon: ClipboardCheck },
   { to: '/admin/students', label: 'Students', icon: Users },
+  { to: '/admin/toppers', label: 'Toppers', icon: Trophy },
 ];
 
 const AdminLayout = ({ children }) => {

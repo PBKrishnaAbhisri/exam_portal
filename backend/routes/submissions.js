@@ -69,14 +69,20 @@ router.post('/start/:examId', authenticate, requireStudent, async (req, res) => 
       return res.status(200).json({ message: 'Resuming exam.', submission, exam: sanitizeExamForStudent(exam) });
     }
 
-    // Determine question order (possibly shuffled)
-    let questionOrder = exam.questions.map((q) => q._id);
+    // Determine questions list: flattened across sections if multi-section, else flat questions
+    const allQuestions =
+      exam.isMultiSection && exam.sections?.length > 0
+        ? exam.sections.flatMap((s) => s.questions || [])
+        : exam.questions || [];
+
+    // Determine question order (possibly shuffled within sections or flat)
+    let questionOrder = allQuestions.map((q) => q._id);
     if (exam.shuffleQuestions) {
       questionOrder = shuffleArray(questionOrder);
     }
 
     // Create empty answer slots for each question
-    const answers = exam.questions.map((q) => ({
+    const answers = allQuestions.map((q) => ({
       questionId: q._id,
       questionType: q.type,
       selectedOptions: [],
@@ -91,7 +97,10 @@ router.post('/start/:examId', authenticate, requireStudent, async (req, res) => 
       examId: exam._id,
       answers,
       questionOrder,
-      maxPossibleScore: exam.questions.length * exam.marksPerQuestion,
+      maxPossibleScore: allQuestions.length * exam.marksPerQuestion,
+      currentSection: 0,
+      sectionStartedAt: new Date(),
+      sectionTimeRemaining: [],
     });
 
     res.status(201).json({
@@ -183,7 +192,16 @@ router.post('/:submissionId/violations', authenticate, requireStudent, async (re
     const threshold = submission.examId?.violationThreshold || 3;
     let locked = false;
 
-    if (submission.violationCount >= threshold && !submission.isLocked) {
+    // Trigger lock:
+    // If the exam was previously unlocked, any new violation beyond unlockedAtViolationCount locks it again (giving 1 chance per unlock)
+    // If never unlocked, locks when total violationCount reaches the threshold
+    const shouldLock =
+      !submission.isLocked &&
+      (submission.unlockedAtViolationCount > 0
+        ? submission.violations.length > submission.unlockedAtViolationCount
+        : submission.violationCount >= threshold);
+
+    if (shouldLock) {
       submission.isLocked = true;
       submission.status = 'locked';
       locked = true;
@@ -230,20 +248,77 @@ router.post('/:submissionId/unlock', authenticate, requireStudent, async (req, r
       return res.status(400).json({ message: 'Incorrect unlock code. Please verify with your invigilator.' });
     }
 
-    // Unlock: set violationCount to threshold - 1 so one more violation re-locks
+    // Unlock: keep full accurate violationCount and record unlockedAtViolationCount
     submission.isLocked = false;
     submission.status = 'started';
-    submission.violationCount = exam.violationThreshold - 1;
+    submission.violationCount = submission.violations.length;
+    submission.unlockedAtViolationCount = submission.violations.length;
+    submission.unlockCount = (submission.unlockCount || 0) + 1;
 
     await submission.save();
 
     res.status(200).json({
       message: 'Exam unlocked successfully. One more violation will lock the exam again.',
       violationCount: submission.violationCount,
+      isLocked: false,
+      violations: submission.violations,
     });
   } catch (error) {
     console.error('Unlock error:', error);
     res.status(500).json({ message: 'Server error unlocking exam.' });
+  }
+});
+
+/**
+ * @route   PATCH /api/submissions/:submissionId/next-section
+ * @desc    Advance to the next section in a multi-section exam
+ * @access  Student
+ */
+router.patch('/:submissionId/next-section', authenticate, requireStudent, async (req, res) => {
+  try {
+    const submission = await Submission.findById(req.params.submissionId);
+    if (!submission) return res.status(404).json({ message: 'Submission not found.' });
+    if (submission.studentId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: 'Access denied.' });
+    }
+    if (submission.status === 'submitted' || submission.status === 'auto-submitted') {
+      return res.status(400).json({ message: 'Exam already submitted.' });
+    }
+    if (submission.isLocked) {
+      return res.status(423).json({ message: 'Exam is locked due to violations.' });
+    }
+
+    const exam = await Exam.findById(submission.examId);
+    if (!exam) return res.status(404).json({ message: 'Exam not found.' });
+    if (!exam.isMultiSection || !exam.sections || exam.sections.length === 0) {
+      return res.status(400).json({ message: 'This exam is not a multi-section exam.' });
+    }
+
+    if (submission.currentSection >= exam.sections.length - 1) {
+      return res.status(400).json({ message: 'Already on the final section.' });
+    }
+
+    // Save remaining seconds for the section just completed if sent from client
+    const { timeRemaining } = req.body;
+    submission.sectionTimeRemaining.push(
+      timeRemaining !== undefined ? Number(timeRemaining) : 0
+    );
+
+    // Advance section
+    submission.currentSection += 1;
+    submission.sectionStartedAt = new Date();
+
+    await submission.save();
+
+    res.status(200).json({
+      message: 'Advanced to next section.',
+      currentSection: submission.currentSection,
+      sectionStartedAt: submission.sectionStartedAt,
+      submission,
+    });
+  } catch (error) {
+    console.error('Next section error:', error);
+    res.status(500).json({ message: 'Server error advancing section.' });
   }
 });
 
@@ -329,7 +404,7 @@ router.get('/result/:examId', authenticate, requireStudent, async (req, res) => 
       return res.status(400).json({ message: 'Invalid exam ID.' });
     }
     const exam = await Exam.findById(req.params.examId).select(
-      'title publishResults marksPerQuestion negativeMarking negativeMarkValue questions'
+      'title publishResults marksPerQuestion negativeMarking negativeMarkValue isMultiSection sections questions'
     );
     if (!exam) return res.status(404).json({ message: 'Exam not found.' });
 
@@ -362,10 +437,16 @@ router.get('/result/:examId', authenticate, requireStudent, async (req, res) => 
       });
     }
 
+    // Get all questions (flat or flattened from sections)
+    const allQuestions =
+      exam.isMultiSection && exam.sections?.length > 0
+        ? exam.sections.flatMap((s) => s.questions || [])
+        : exam.questions || [];
+
     // Build per-question breakdown (student sees their answer + correct status)
     // Do NOT expose correctOptions or other students' data
     const breakdown = submission.answers.map((answer) => {
-      const question = exam.questions.find(
+      const question = allQuestions.find(
         (q) => q._id.toString() === answer.questionId.toString()
       );
       return {
@@ -398,6 +479,32 @@ router.get('/result/:examId', authenticate, requireStudent, async (req, res) => 
 });
 
 
+/**
+ * @route   PATCH /api/submissions/:submissionId/heartbeat
+ * @desc    Student pings to signal they are still active on the exam page
+ * @access  Student
+ */
+router.patch('/:submissionId/heartbeat', authenticate, requireStudent, async (req, res) => {
+  try {
+    const submission = await Submission.findById(req.params.submissionId);
+    if (!submission) return res.status(404).json({ message: 'Submission not found.' });
+    if (submission.studentId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: 'Access denied.' });
+    }
+
+    // Only update heartbeat for active (non-submitted) sessions
+    if (submission.status === 'started' || submission.status === 'locked') {
+      submission.lastHeartbeatAt = new Date();
+      await submission.save();
+    }
+
+    res.status(200).json({ ok: true });
+  } catch (error) {
+    console.error('Heartbeat error:', error);
+    res.status(500).json({ message: 'Server error.' });
+  }
+});
+
 // ─── ADMIN ROUTES ─────────────────────────────────────────────────────────
 
 /**
@@ -425,17 +532,50 @@ router.get('/admin/exam/:examId', authenticate, requireAdmin, async (req, res) =
  */
 router.get('/admin/live', authenticate, requireAdmin, async (req, res) => {
   try {
+    // A student is considered "live" only if they sent a heartbeat within the last 15 seconds.
+    const HEARTBEAT_WINDOW_MS = 15 * 1000;
+    const cutoff = new Date(Date.now() - HEARTBEAT_WINDOW_MS);
+
     const liveSubmissions = await Submission.find({
       status: { $in: ['started', 'locked'] },
+      lastHeartbeatAt: { $gte: cutoff },
     })
-      .populate('studentId', 'name email rollNumber branch year')
-      .populate('examId', 'title examCode violationThreshold')
-      .sort({ createdAt: -1 });
+      .populate('studentId', 'name email rollNumber branch year domains')
+      .populate('examId', 'title subject examCode violationThreshold duration isMultiSection sections')
+      .sort({ lastHeartbeatAt: -1 });
 
     res.status(200).json({ liveSubmissions });
   } catch (error) {
     console.error('Get live submissions error:', error);
     res.status(500).json({ message: 'Server error fetching live submissions.' });
+  }
+});
+
+/**
+ * @route   POST /api/submissions/admin/unlock/:submissionId
+ * @desc    Directly unlock a locked student session from Live Monitor
+ * @access  Admin
+ */
+router.post('/admin/unlock/:submissionId', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const submission = await Submission.findById(req.params.submissionId).populate('examId');
+    if (!submission) return res.status(404).json({ message: 'Submission not found.' });
+
+    submission.isLocked = false;
+    submission.status = 'started';
+    submission.violationCount = submission.violations.length;
+    submission.unlockedAtViolationCount = submission.violations.length;
+    submission.unlockCount = (submission.unlockCount || 0) + 1;
+
+    await submission.save();
+
+    res.status(200).json({
+      message: 'Student session unlocked successfully.',
+      submission,
+    });
+  } catch (error) {
+    console.error('Admin unlock error:', error);
+    res.status(500).json({ message: 'Server error unlocking student.' });
   }
 });
 
@@ -522,10 +662,19 @@ router.put('/admin/review/:submissionId/:questionId', authenticate, requireAdmin
  */
 const sanitizeExamForStudent = (exam) => {
   const examObj = exam.toObject ? exam.toObject() : { ...exam };
-  examObj.questions = examObj.questions.map((q) => {
+  const sanitizeQ = (q) => {
     const { correctOptions, acceptedTexts, numericValue, numericTolerance, ...safe } = q;
     return safe;
-  });
+  };
+  if (examObj.questions) {
+    examObj.questions = examObj.questions.map(sanitizeQ);
+  }
+  if (examObj.sections) {
+    examObj.sections = examObj.sections.map((s) => ({
+      ...s,
+      questions: (s.questions || []).map(sanitizeQ),
+    }));
+  }
   delete examObj.unlockCode;
   return examObj;
 };

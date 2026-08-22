@@ -120,6 +120,11 @@ const examSchema = new mongoose.Schema(
       enum: [1, 2, 3, 4],
       default: [],
     },
+    // Domain targeting — empty means open to all domains
+    eligibleDomains: {
+      type: [String],
+      default: [],
+    },
     shuffleQuestions: {
       type: Boolean,
       default: false,
@@ -150,6 +155,25 @@ const examSchema = new mongoose.Schema(
       ref: 'User',
       required: true,
     },
+    isMultiSection: {
+      type: Boolean,
+      default: false,
+    },
+    sections: [
+      {
+        title: {
+          type: String,
+          required: [true, 'Section title is required'],
+          trim: true,
+        },
+        duration: {
+          type: Number, // in minutes
+          required: [true, 'Section duration is required'],
+          min: 1,
+        },
+        questions: [questionSchema],
+      },
+    ],
     questions: [questionSchema],
     // Result publish flag
     publishResults: {

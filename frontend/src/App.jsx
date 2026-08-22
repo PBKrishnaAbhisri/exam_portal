@@ -18,6 +18,8 @@ import LiveMonitor from './pages/admin/LiveMonitor';
 import ManualReview from './pages/admin/ManualReview';
 import ExamBank from './pages/admin/ExamBank';
 import StudentsList from './pages/admin/StudentsList';
+import StudentProfileAdmin from './pages/admin/StudentProfile';
+import Toppers from './pages/admin/Toppers';
 
 // Student pages
 import StudentDashboard from './pages/student/StudentDashboard';
@@ -25,6 +27,7 @@ import StudentResults from './pages/student/StudentResults';
 import ExamResult from './pages/student/ExamResult';
 import ExamInstructions from './pages/student/ExamInstructions';
 import ExamEnvironment from './pages/student/ExamEnvironment';
+import StudentProfile from './pages/student/StudentProfile';
 
 function App() {
   return (
@@ -65,11 +68,14 @@ function App() {
             <Route path="/admin/review" element={<ManualReview />} />
             <Route path="/admin/exam-bank" element={<ExamBank />} />
             <Route path="/admin/students" element={<StudentsList />} />
+            <Route path="/admin/students/:id" element={<StudentProfileAdmin />} />
+            <Route path="/admin/toppers" element={<Toppers />} />
           </Route>
 
           {/* Student routes */}
           <Route element={<ProtectedRoute allowedRoles={['student']} />}>
             <Route path="/student" element={<StudentDashboard />} />
+            <Route path="/student/profile" element={<StudentProfile />} />
             <Route path="/student/results" element={<StudentResults />} />
             <Route path="/student/result/:examId" element={<ExamResult />} />
             <Route path="/student/exam/:examId/instructions" element={<ExamInstructions />} />

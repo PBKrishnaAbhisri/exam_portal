@@ -147,12 +147,19 @@ const gradeAnswer = (question, answer, marksPerQuestion, negativeMarking, negati
 const gradeSubmission = (submission, exam) => {
   const { marksPerQuestion, negativeMarking, negativeMarkValue } = exam;
   let totalScore = 0;
-  const maxPossibleScore = exam.questions.length * marksPerQuestion;
+
+  // Flatten all questions if multi-section, otherwise use flat questions array
+  const allQuestions =
+    exam.isMultiSection && exam.sections?.length > 0
+      ? exam.sections.flatMap((s) => s.questions || [])
+      : exam.questions || [];
+
+  const maxPossibleScore = allQuestions.length * marksPerQuestion;
 
   const gradedAnswers = submission.answers.map((answer) => {
-    const question = exam.questions.id
-      ? exam.questions.id(answer.questionId)
-      : exam.questions.find((q) => q._id.toString() === answer.questionId.toString());
+    const question = allQuestions.find(
+      (q) => q._id.toString() === answer.questionId.toString()
+    );
 
     if (!question) return answer;
 

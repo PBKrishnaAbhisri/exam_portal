@@ -9,16 +9,38 @@ const examRoutes = require('./routes/exams');
 const submissionRoutes = require('./routes/submissions');
 const adminRoutes = require('./routes/admin');
 
-// Connect to MongoDB
+// Cron jobs
+const { startYearPromotionCron } = require('./utils/cronJobs');
+
+// Connect to MongoDB & start cron
 connectDB();
+startYearPromotionCron();
 
 const app = express();
 
 // ─── MIDDLEWARE ──────────────────────────────────────────────────────────────
 app.use(cors({
-  origin: ['http://localhost:5173', 'http://localhost:3000'],
+  origin: (origin, callback) => {
+    // Allow requests with no origin (e.g. mobile apps, curl, Postman)
+    if (!origin) return callback(null, true);
+
+    // Allow any localhost / 127.0.0.1 port (5173, 5174, 3000, etc.)
+    const isLocalhost = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
+    if (isLocalhost) {
+      return callback(null, true);
+    }
+
+    // Default allowed origins from env or whitelist
+    const allowed = ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'];
+    if (allowed.includes(origin)) {
+      return callback(null, true);
+    }
+
+    callback(null, true); // Allow during development
+  },
   credentials: true,
 }));
+
 app.use(express.json({ limit: '10mb' })); // Allow base64 snapshots
 app.use(express.urlencoded({ extended: true }));
 

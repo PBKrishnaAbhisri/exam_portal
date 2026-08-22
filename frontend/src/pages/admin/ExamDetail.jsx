@@ -1,9 +1,19 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import AdminLayout from '../../components/common/AdminLayout';
-import { getExamAdmin, updateExam, addQuestion, updateQuestion, deleteQuestion, getQuestionBank, getQuestionBankExam } from '../../api';
+import {
+  getExamAdmin, updateExam, deleteExam,
+  addQuestion, updateQuestion, deleteQuestion,
+  addSection, updateSection, deleteSection,
+  getQuestionBank, getQuestionBankExam,
+  togglePublishResults, notifyStudentsExam, getDomains
+} from '../../api';
 import toast from 'react-hot-toast';
-import { Plus, Edit, Trash2, Save, X, Upload, Eye, BookOpen, CheckSquare, Type, Hash, ChevronDown, ChevronUp, Image } from 'lucide-react';
+import {
+  Plus, Edit, Trash2, Save, X, Upload, Eye, EyeOff, BookOpen,
+  CheckSquare, Square, Tag, Type, Hash, ChevronDown, ChevronUp, Image, Mail,
+  Send, AlertCircle, Layers, Clock
+} from 'lucide-react';
 
 const BRANCHES = ['CSE', 'ECE', 'EEE', 'MECH', 'CIVIL', 'IT', 'AIDS', 'AIML', 'CSD', 'OTHER'];
 const YEARS = [1, 2, 3, 4];
@@ -19,10 +29,15 @@ const ExamDetail = () => {
   const navigate = useNavigate();
   const [exam, setExam] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [allDomainCategories, setAllDomainCategories] = useState([]);
   const [editingExam, setEditingExam] = useState(false);
   const [examForm, setExamForm] = useState({});
   const [savingExam, setSavingExam] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const [notifying, setNotifying] = useState(false);
+  const [notifyProgress, setNotifyProgress] = useState(null); // {sent, failed, total}
   const [showAddQ, setShowAddQ] = useState(false);
+  const [targetSectionId, setTargetSectionId] = useState(null);
   const [qForm, setQForm] = useState({ ...EMPTY_Q });
   const [editQId, setEditQId] = useState(null);
   const [savingQ, setSavingQ] = useState(false);
@@ -33,6 +48,10 @@ const ExamDetail = () => {
   const [bankQs, setBankQs] = useState([]);
   const [selectedBankQIds, setSelectedBankQIds] = useState([]);
   const [importingBank, setImportingBank] = useState(false);
+  const [showSectionModal, setShowSectionModal] = useState(false);
+  const [newSection, setNewSection] = useState({ title: '', duration: 30 });
+  const [editingSectionId, setEditingSectionId] = useState(null);
+  const [editSectionData, setEditSectionData] = useState({ title: '', duration: 30 });
 
   const fetchExam = async () => {
     try {
@@ -44,29 +63,151 @@ const ExamDetail = () => {
         endTime: data.exam.endTime?.slice(0, 16), marksPerQuestion: data.exam.marksPerQuestion,
         negativeMarking: data.exam.negativeMarking, negativeMarkValue: data.exam.negativeMarkValue,
         eligibleBranches: data.exam.eligibleBranches || [], eligibleYears: data.exam.eligibleYears || [],
+        eligibleDomains: data.exam.eligibleDomains || [],
         shuffleQuestions: data.exam.shuffleQuestions, shuffleOptions: data.exam.shuffleOptions,
         unlockCode: data.exam.unlockCode, violationThreshold: data.exam.violationThreshold,
       });
     } catch { toast.error('Failed to load exam.'); } finally { setLoading(false); }
   };
 
-  useEffect(() => { fetchExam(); }, [id]);
+  useEffect(() => {
+    fetchExam();
+    getDomains().then(({ data }) => setAllDomainCategories(data.categories || []));
+  }, [id]);
 
-  const handleExamSave = async () => {
-    setSavingExam(true);
+  const handlePublishToggle = async () => {
+    if (!exam) return;
+    const isEnded = new Date() >= new Date(exam.endTime);
+    let force = false;
+
+    if (!exam.publishResults && !isEnded) {
+      const proceed = window.confirm(
+        `This exam is scheduled to end on ${new Date(exam.endTime).toLocaleString()}.\n\nPublish results now anyway?`
+      );
+      if (!proceed) return;
+      force = true;
+    }
+
+    setPublishing(true);
     try {
-      const { data } = await updateExam(id, { ...examForm, duration: Number(examForm.duration), marksPerQuestion: Number(examForm.marksPerQuestion), negativeMarkValue: Number(examForm.negativeMarkValue), violationThreshold: Number(examForm.violationThreshold) });
-      setExam(data.exam); setEditingExam(false); toast.success('Exam updated.');
-    } catch { toast.error('Failed to update exam.'); } finally { setSavingExam(false); }
+      const { data } = await togglePublishResults(id, force);
+      setExam(prev => ({ ...prev, publishResults: data.publishResults }));
+      setExamForm(prev => ({ ...prev, publishResults: data.publishResults }));
+      if (data.publishResults) {
+        toast.success('Results published successfully!');
+        if (data.emailResult?.reason) {
+          toast(data.emailResult.reason, { icon: 'ℹ️' });
+        }
+      } else {
+        toast.success('Results unpublished (hidden from students).');
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Failed to toggle publish status.');
+    } finally {
+      setPublishing(false);
+    }
   };
 
-  const toggleBranch = (b) => setExamForm((p) => ({ ...p, eligibleBranches: p.eligibleBranches.includes(b) ? p.eligibleBranches.filter((x) => x !== b) : [...p.eligibleBranches, b] }));
-  const toggleYear = (y) => setExamForm((p) => ({ ...p, eligibleYears: p.eligibleYears.includes(y) ? p.eligibleYears.filter((x) => x !== y) : [...p.eligibleYears, y] }));
+  const handleNotifyStudents = async () => {
+    if (!exam) return;
+    setNotifying(true);
+    setNotifyProgress(null);
+    try {
+      const result = await notifyStudentsExam(id, (progress) => {
+        setNotifyProgress(progress);
+      });
+      if (result?.sentCount > 0) {
+        toast.success(`✉ Sent ${result.sentCount}/${result.total} emails successfully!`);
+      } else if (result?.reason) {
+        toast(result.reason, { icon: '⚠️', duration: 6000 });
+      } else {
+        toast('Notification complete.', { icon: '📧' });
+      }
+    } catch (err) {
+      toast.error(err.message || 'Failed to send notifications.');
+    } finally {
+      setNotifying(false);
+      setNotifyProgress(null);
+    }
+  };
 
-  const startAddQ = () => { setQForm({ ...EMPTY_Q }); setEditQId(null); setShowAddQ(true); };
-  const startEditQ = (q) => {
-    setQForm({ type: q.type, questionText: q.questionText, options: q.options?.length ? q.options : ['', '', '', ''], correctOptions: q.correctOptions || [], acceptedTexts: q.acceptedTexts?.length ? q.acceptedTexts : [''], numericValue: q.numericValue ?? '', numericTolerance: q.numericTolerance ?? 0, fillBlankType: q.fillBlankType || 'text', subject: q.subject || '', topic: q.topic || '', image: null, existingImageUrl: q.imageUrl });
-    setEditQId(q._id); setShowAddQ(true); window.scrollTo({ top: 0, behavior: 'smooth' });
+  const handleExamSave = async () => {
+    if (!examForm.eligibleDomains || examForm.eligibleDomains.length === 0) {
+      toast.error('Domain selection is mandatory. Select at least one domain.');
+      return;
+    }
+    setSavingExam(true);
+    try {
+      const { data } = await updateExam(id, {
+        ...examForm,
+        duration: Number(examForm.duration),
+        marksPerQuestion: Number(examForm.marksPerQuestion),
+        negativeMarkValue: Number(examForm.negativeMarkValue),
+        violationThreshold: Number(examForm.violationThreshold),
+      });
+      setExam(data.exam);
+      setExamForm({
+        ...examForm,
+        ...data.exam,
+        startTime: data.exam.startTime?.slice(0, 16),
+        endTime: data.exam.endTime?.slice(0, 16),
+      });
+      setEditingExam(false);
+      toast.success('Exam updated.');
+    } catch {
+      toast.error('Failed to update exam.');
+    } finally {
+      setSavingExam(false);
+    }
+  };
+
+  const toggleBranch = (b) =>
+    setExamForm((p) => ({
+      ...p,
+      eligibleBranches: p.eligibleBranches.includes(b)
+        ? p.eligibleBranches.filter((x) => x !== b)
+        : [...p.eligibleBranches, b],
+    }));
+
+  const toggleYear = (y) =>
+    setExamForm((p) => ({
+      ...p,
+      eligibleYears: p.eligibleYears.includes(y)
+        ? p.eligibleYears.filter((x) => x !== y)
+        : [...p.eligibleYears, y],
+    }));
+
+  const toggleDomain = (domain) =>
+    setExamForm((p) => ({
+      ...p,
+      eligibleDomains: (p.eligibleDomains || []).includes(domain)
+        ? (p.eligibleDomains || []).filter((d) => d !== domain)
+        : [...(p.eligibleDomains || []), domain],
+    }));
+
+  const startAddQ = (sectionId = null) => {
+    setQForm({ ...EMPTY_Q });
+    setEditQId(null);
+    setTargetSectionId(sectionId || (exam?.sections?.[0]?._id || null));
+    setShowAddQ(true);
+  };
+
+  const startEditQ = (q, sectionId = null) => {
+    setQForm({
+      type: q.type, questionText: q.questionText,
+      options: q.options?.length ? q.options : ['', '', '', ''],
+      correctOptions: q.correctOptions || [],
+      acceptedTexts: q.acceptedTexts?.length ? q.acceptedTexts : [''],
+      numericValue: q.numericValue ?? '',
+      numericTolerance: q.numericTolerance ?? 0,
+      fillBlankType: q.fillBlankType || 'text',
+      subject: q.subject || '', topic: q.topic || '',
+      image: null, existingImageUrl: q.imageUrl
+    });
+    setEditQId(q._id);
+    if (sectionId) setTargetSectionId(sectionId);
+    setShowAddQ(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleQChange = (e) => {
@@ -100,6 +241,9 @@ const ExamDetail = () => {
       fd.append('numericValue', qForm.numericValue); fd.append('numericTolerance', qForm.numericTolerance);
       fd.append('fillBlankType', qForm.fillBlankType);
       if (qForm.image) fd.append('image', qForm.image);
+      if (exam.isMultiSection && targetSectionId) {
+        fd.append('sectionId', targetSectionId);
+      }
       if (editQId) { await updateQuestion(id, editQId, fd); toast.success('Question updated.'); }
       else { await addQuestion(id, fd); toast.success('Question added.'); }
       await fetchExam(); setShowAddQ(false); setEditQId(null); setQForm({ ...EMPTY_Q });
@@ -109,12 +253,80 @@ const ExamDetail = () => {
   const handleDeleteQ = async (qId) => {
     if (!window.confirm('Delete this question?')) return;
     setDeletingQId(qId);
-    try { await deleteQuestion(id, qId); toast.success('Question deleted.'); setExam((p) => ({ ...p, questions: p.questions.filter((q) => q._id !== qId) }));
-    } catch { toast.error('Failed to delete.'); } finally { setDeletingQId(null); }
+    try {
+      await deleteQuestion(id, qId);
+      toast.success('Question deleted.');
+      await fetchExam();
+    } catch {
+      toast.error('Failed to delete.');
+    } finally {
+      setDeletingQId(null);
+    }
   };
 
-  const openBank = async () => { try { const { data } = await getQuestionBank(); setBankExams(data.exams.filter((e) => e._id !== id)); setShowBank(true); } catch { toast.error('Failed to load question bank.'); } };
-  const selectBankExam = async (examId) => { try { const { data } = await getQuestionBankExam(examId); setSelectedBankExam(data.exam); setBankQs(data.exam.questions); setSelectedBankQIds([]); } catch { toast.error('Failed to load questions.'); } };
+  const handleAddSection = async (e) => {
+    e.preventDefault();
+    if (!newSection.title.trim()) return toast.error('Section title is required.');
+    if (!newSection.duration || Number(newSection.duration) < 1) return toast.error('Duration must be at least 1 min.');
+    try {
+      await addSection(id, newSection);
+      toast.success('Section added.');
+      setShowSectionModal(false);
+      setNewSection({ title: '', duration: 30 });
+      await fetchExam();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Failed to add section.');
+    }
+  };
+
+  const handleUpdateSection = async (sectionId) => {
+    if (!editSectionData.title.trim()) return toast.error('Section title is required.');
+    try {
+      await updateSection(id, sectionId, editSectionData);
+      toast.success('Section updated.');
+      setEditingSectionId(null);
+      await fetchExam();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Failed to update section.');
+    }
+  };
+
+  const handleDeleteSection = async (sectionId) => {
+    if (!window.confirm('Delete this section and all its questions?')) return;
+    try {
+      await deleteSection(id, sectionId);
+      toast.success('Section deleted.');
+      await fetchExam();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Failed to delete section.');
+    }
+  };
+
+  const openBank = (sectionId = null) => {
+    setTargetSectionId(sectionId || (exam?.sections?.[0]?._id || null));
+    getQuestionBank()
+      .then(({ data }) => {
+        setBankExams(data.exams.filter((e) => e._id !== id));
+        setShowBank(true);
+      })
+      .catch(() => toast.error('Failed to load question bank.'));
+  };
+
+  const selectBankExam = async (examId) => {
+    try {
+      const { data } = await getQuestionBankExam(examId);
+      setSelectedBankExam(data.exam);
+      // Flatten questions if bank exam is multi-section
+      const questions = data.exam.isMultiSection && data.exam.sections
+        ? data.exam.sections.flatMap((s) => s.questions || [])
+        : data.exam.questions || [];
+      setBankQs(questions);
+      setSelectedBankQIds([]);
+    } catch {
+      toast.error('Failed to load questions.');
+    }
+  };
+
   const toggleBankQ = (qId) => setSelectedBankQIds((p) => p.includes(qId) ? p.filter((i) => i !== qId) : [...p, qId]);
 
   const importSelectedQs = async () => {
@@ -128,6 +340,9 @@ const ExamDetail = () => {
         fd.append('options', JSON.stringify(q.options || [])); fd.append('correctOptions', JSON.stringify(q.correctOptions || []));
         fd.append('acceptedTexts', JSON.stringify(q.acceptedTexts || [])); fd.append('numericValue', q.numericValue ?? '');
         fd.append('numericTolerance', q.numericTolerance ?? 0); fd.append('fillBlankType', q.fillBlankType || '');
+        if (exam.isMultiSection && targetSectionId) {
+          fd.append('sectionId', targetSectionId);
+        }
         await addQuestion(id, fd);
       }
       toast.success(`${qs.length} question(s) imported!`); await fetchExam(); setShowBank(false);
@@ -137,27 +352,161 @@ const ExamDetail = () => {
   if (loading) return <AdminLayout><div className="flex justify-center items-center h-64"><div className="spinner w-8 h-8"></div></div></AdminLayout>;
   if (!exam) return <AdminLayout><div className="page-content text-slate-500">Exam not found.</div></AdminLayout>;
 
+  const totalQuestions = exam.isMultiSection
+    ? (exam.sections || []).reduce((acc, s) => acc + (s.questions?.length || 0), 0)
+    : (exam.questions?.length || 0);
+
   return (
     <AdminLayout>
       <div className="page-header">
-        <div className="flex items-start justify-between">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
-            <h1 className="text-xl font-bold text-slate-800">{exam.title}</h1>
-            <div className="flex items-center gap-3 mt-1">
-              <span className="font-mono text-xs bg-slate-100 px-2 py-1 rounded-md text-slate-600">{exam.examCode}</span>
-              <span className="text-sm text-slate-500">{exam.questions?.length || 0} questions</span>
+            <div className="flex items-center gap-2">
+              <h1 className="text-xl font-bold text-slate-800">{exam.title}</h1>
+              {exam.isMultiSection && (
+                <span className="badge badge-purple flex items-center gap-1">
+                  <Layers className="w-3 h-3" /> Multi-Section ({exam.sections?.length || 0})
+                </span>
+              )}
+            </div>
+            <div className="flex items-center flex-wrap gap-2 mt-1.5">
+              <span className="font-mono text-xs bg-slate-100 px-2.5 py-1 rounded-md text-slate-700 font-semibold">{exam.examCode}</span>
+              <span className="text-sm text-slate-500">{totalQuestions} questions</span>
+              <span className="text-sm text-slate-500 flex items-center gap-1">
+                <Clock className="w-3.5 h-3.5" /> {exam.duration} mins
+              </span>
               {exam.subject && <span className="badge badge-blue">{exam.subject}</span>}
+              <span className={`badge ${exam.publishResults ? 'badge-green' : 'badge-gray'}`}>
+                {exam.publishResults ? '● Results Published' : '○ Results Hidden'}
+              </span>
             </div>
           </div>
-          <div className="flex gap-2">
-            <button id="open-bank" onClick={openBank} className="btn-secondary"><BookOpen className="w-4 h-4" /> Import from Bank</button>
-            <button id="toggle-edit" onClick={() => setEditingExam(!editingExam)} className="btn-secondary"><Edit className="w-4 h-4" /> {editingExam ? 'Cancel' : 'Edit Info'}</button>
-            <button id="add-q-btn" onClick={startAddQ} className="btn-primary"><Plus className="w-4 h-4" /> Add Question</button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              id="notify-students-btn"
+              type="button"
+              onClick={handleNotifyStudents}
+              disabled={notifying}
+              className="btn-secondary text-blue-600 border-blue-200 hover:bg-blue-50 min-w-[160px]"
+              title="Send email notifications to all students matching this exam's branch and domains"
+            >
+              {notifying ? (
+                <>
+                  <div className="spinner w-4 h-4" />
+                  {notifyProgress
+                    ? `Sending ${notifyProgress.sent}/${notifyProgress.total}`
+                    : 'Starting...'}
+                </>
+              ) : (
+                <>
+                  <Mail className="w-4 h-4" />
+                  Notify Students
+                </>
+              )}
+            </button>
+
+            <button
+              id="publish-results-btn"
+              type="button"
+              onClick={handlePublishToggle}
+              disabled={publishing}
+              className={`btn ${
+                exam.publishResults
+                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                  : 'bg-slate-800 hover:bg-slate-900 text-white'
+              }`}
+            >
+              {publishing ? (
+                <div className="spinner w-4 h-4" />
+              ) : exam.publishResults ? (
+                <Eye className="w-4 h-4" />
+              ) : (
+                <EyeOff className="w-4 h-4" />
+              )}
+              {exam.publishResults ? 'Results Published' : 'Publish Results'}
+            </button>
+
+            {exam.isMultiSection && (
+              <button
+                id="add-section-btn"
+                onClick={() => setShowSectionModal(true)}
+                className="btn-secondary text-purple-700 border-purple-200 hover:bg-purple-50"
+              >
+                <Plus className="w-4 h-4" /> Add Section
+              </button>
+            )}
+
+            <button id="open-bank" onClick={() => openBank()} className="btn-secondary">
+              <BookOpen className="w-4 h-4" /> Bank
+            </button>
+            <button id="toggle-edit" onClick={() => setEditingExam(!editingExam)} className="btn-secondary">
+              <Edit className="w-4 h-4" /> {editingExam ? 'Cancel' : 'Edit'}
+            </button>
+            {!exam.isMultiSection && (
+              <button id="add-q-btn" onClick={() => startAddQ()} className="btn-primary">
+                <Plus className="w-4 h-4" /> Add Question
+              </button>
+            )}
           </div>
         </div>
       </div>
 
       <div className="page-content space-y-5">
+        {/* Results Published Alert Banner */}
+        {exam.publishResults && (
+          <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-2xl flex items-center justify-between gap-3 text-emerald-800 text-sm">
+            <div className="flex items-center gap-2.5">
+              <span className="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-pulse"></span>
+              <span><strong>Results are currently Published.</strong> Students can view their scores, detailed solutions, and leaderboard rankings.</span>
+            </div>
+            <button onClick={handlePublishToggle} className="text-xs font-semibold text-emerald-700 hover:underline">
+              Unpublish
+            </button>
+          </div>
+        )}
+
+        {/* Add Section Modal */}
+        {showSectionModal && (
+          <div className="modal-overlay" onClick={() => setShowSectionModal(false)}>
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden" onClick={(e) => e.stopPropagation()}>
+              <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+                <h3 className="font-semibold text-slate-800 text-lg flex items-center gap-2">
+                  <Layers className="w-5 h-5 text-purple-600" /> Add Section
+                </h3>
+                <button onClick={() => setShowSectionModal(false)} className="btn-ghost btn-sm"><X className="w-4 h-4" /></button>
+              </div>
+              <form onSubmit={handleAddSection} className="p-6 space-y-4">
+                <div>
+                  <label className="form-label">Section Title *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Section 3 - Coding & Tech"
+                    value={newSection.title}
+                    onChange={(e) => setNewSection({ ...newSection, title: e.target.value })}
+                    className="form-input"
+                  />
+                </div>
+                <div>
+                  <label className="form-label">Section Duration (mins) *</label>
+                  <input
+                    type="number"
+                    min="1"
+                    required
+                    value={newSection.duration}
+                    onChange={(e) => setNewSection({ ...newSection, duration: e.target.value })}
+                    className="form-input"
+                  />
+                </div>
+                <div className="flex justify-end gap-3 pt-2">
+                  <button type="button" onClick={() => setShowSectionModal(false)} className="btn-ghost">Cancel</button>
+                  <button type="submit" className="btn-primary">Add Section</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
         {/* Exam Edit Panel */}
         {editingExam && (
           <div className="card border-primary-200">
@@ -175,6 +524,37 @@ const ExamDetail = () => {
               </div>
               <div><label className="form-label">Branches</label><div className="flex flex-wrap gap-2">{BRANCHES.map((b) => <button key={b} type="button" onClick={() => toggleBranch(b)} className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-all ${examForm.eligibleBranches?.includes(b) ? 'bg-primary-600 text-white border-primary-600' : 'bg-white text-slate-600 border-slate-200'}`}>{b}</button>)}</div></div>
               <div><label className="form-label">Years</label><div className="flex gap-2">{YEARS.map((y) => <button key={y} type="button" onClick={() => toggleYear(y)} className={`w-14 py-1.5 rounded-lg text-sm font-medium border transition-all ${examForm.eligibleYears?.includes(y) ? 'bg-primary-600 text-white border-primary-600' : 'bg-white text-slate-600 border-slate-200'}`}>Y{y}</button>)}</div></div>
+
+              {/* Domain Targeting (Mandatory) */}
+              <div>
+                <label className="form-label flex items-center gap-1.5 font-semibold text-slate-800">
+                  <Tag className="w-3.5 h-3.5 text-primary-600" /> Eligible Domains *{' '}
+                  <span className="text-primary-700 font-medium text-xs">(Mandatory — select at least one domain)</span>
+                </label>
+                <div className="space-y-3 max-h-48 overflow-y-auto border border-slate-200 rounded-xl p-3 bg-slate-50">
+                  {allDomainCategories.map(cat => (
+                    <div key={cat.category}>
+                      <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">{cat.category}</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {cat.domains.map(domain => {
+                          const selected = examForm.eligibleDomains?.includes(domain);
+                          return (
+                            <button key={domain} type="button" onClick={() => toggleDomain(domain)}
+                              className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border transition-all ${selected ? 'bg-primary-600 text-white border-primary-600' : 'bg-white text-slate-600 border-slate-200 hover:border-primary-300'}`}>
+                              {selected ? <CheckSquare className="w-3 h-3" /> : <Square className="w-3 h-3" />}
+                              {domain}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {examForm.eligibleDomains?.length > 0 && (
+                  <p className="text-xs text-slate-500 mt-1.5">{examForm.eligibleDomains.length} domain{examForm.eligibleDomains.length > 1 ? 's' : ''} targeted</p>
+                )}
+              </div>
+
               <div className="flex justify-end gap-3">
                 <button onClick={() => setEditingExam(false)} className="btn-ghost">Cancel</button>
                 <button id="save-exam-info" onClick={handleExamSave} disabled={savingExam} className="btn-primary">{savingExam ? <div className="spinner" /> : <><Save className="w-4 h-4" /> Save</>}</button>
@@ -187,10 +567,30 @@ const ExamDetail = () => {
         {showAddQ && (
           <div className="card border-emerald-200">
             <div className="card-header bg-emerald-50 flex items-center justify-between">
-              <h3 className="font-semibold text-emerald-800">{editQId ? 'Edit Question' : 'Add New Question'}</h3>
+              <h3 className="font-semibold text-emerald-800">
+                {editQId ? 'Edit Question' : 'Add New Question'}
+              </h3>
               <button onClick={() => { setShowAddQ(false); setEditQId(null); }} className="btn-ghost btn-sm"><X className="w-4 h-4" /></button>
             </div>
             <div className="card-body space-y-4">
+              {/* If Multi-Section: Target Section Selector */}
+              {exam.isMultiSection && exam.sections?.length > 0 && (
+                <div>
+                  <label className="form-label font-semibold text-purple-900">Target Section *</label>
+                  <select
+                    value={targetSectionId || exam.sections[0]?._id}
+                    onChange={(e) => setTargetSectionId(e.target.value)}
+                    className="form-select"
+                  >
+                    {exam.sections.map((s, idx) => (
+                      <option key={s._id} value={s._id}>
+                        Section {idx + 1}: {s.title} ({s.duration} mins) — {s.questions?.length || 0} Qs
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
               {/* Type selector */}
               <div>
                 <label className="form-label">Question Type</label>
@@ -294,7 +694,11 @@ const ExamDetail = () => {
                   <label className="form-label">Select Exam</label>
                   <select className="form-select" onChange={(e) => selectBankExam(e.target.value)} defaultValue="">
                     <option value="" disabled>Choose a previous exam...</option>
-                    {bankExams.map((e) => <option key={e._id} value={e._id}>{e.title} ({e.examCode}) — {e.questions?.length} Qs</option>)}
+                    {bankExams.map((e) => (
+                      <option key={e._id} value={e._id}>
+                        {e.title} ({e.examCode}) — {e.questionsCount !== undefined ? e.questionsCount : (e.questions?.length || 0)} Qs
+                      </option>
+                    ))}
                   </select>
                 </div>
                 {bankQs.length > 0 && (
@@ -324,23 +728,148 @@ const ExamDetail = () => {
           </div>
         )}
 
-        {/* Questions List */}
-        <div className="card">
-          <div className="card-header"><h2 className="font-semibold text-slate-800">Questions ({exam.questions?.length || 0})</h2></div>
-          {(!exam.questions || exam.questions.length === 0) ? (
-            <div className="card-body text-center py-16">
-              <BookOpen className="w-12 h-12 text-slate-200 mx-auto mb-3" />
-              <p className="text-slate-500 font-medium">No questions yet</p>
-              <button onClick={startAddQ} className="btn-primary mt-4"><Plus className="w-4 h-4" /> Add First Question</button>
-            </div>
-          ) : (
-            <div className="divide-y divide-slate-50">
-              {exam.questions.map((q, idx) => (
-                <QuestionCard key={q._id} q={q} idx={idx} onEdit={() => startEditQ(q)} onDelete={() => handleDeleteQ(q._id)} deleting={deletingQId === q._id} />
-              ))}
-            </div>
-          )}
-        </div>
+        {/* Questions Display */}
+        {exam.isMultiSection ? (
+          <div className="space-y-6">
+            {(!exam.sections || exam.sections.length === 0) ? (
+              <div className="card text-center py-16">
+                <Layers className="w-12 h-12 text-slate-200 mx-auto mb-3" />
+                <p className="text-slate-500 font-medium">No sections added yet</p>
+                <button onClick={() => setShowSectionModal(true)} className="btn-primary mt-4">
+                  <Plus className="w-4 h-4" /> Add Section
+                </button>
+              </div>
+            ) : (
+              exam.sections.map((section, sIdx) => (
+                <div key={section._id} className="card border-slate-200 overflow-hidden">
+                  <div className="card-header bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <span className="w-7 h-7 rounded-lg bg-purple-600 text-white font-bold text-xs flex items-center justify-center">
+                        {sIdx + 1}
+                      </span>
+                      {editingSectionId === section._id ? (
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={editSectionData.title}
+                            onChange={(e) => setEditSectionData({ ...editSectionData, title: e.target.value })}
+                            className="form-input text-sm py-1"
+                          />
+                          <input
+                            type="number"
+                            min="1"
+                            value={editSectionData.duration}
+                            onChange={(e) => setEditSectionData({ ...editSectionData, duration: e.target.value })}
+                            className="form-input text-sm py-1 w-20"
+                          />
+                          <button onClick={() => handleUpdateSection(section._id)} className="btn-primary btn-sm">Save</button>
+                          <button onClick={() => setEditingSectionId(null)} className="btn-ghost btn-sm">Cancel</button>
+                        </div>
+                      ) : (
+                        <div>
+                          <h3 className="font-semibold text-slate-800 flex items-center gap-2">
+                            {section.title}
+                          </h3>
+                          <p className="text-xs text-slate-500 mt-0.5 flex items-center gap-2">
+                            <span className="font-medium text-purple-700 bg-purple-50 px-2 py-0.5 rounded-md border border-purple-100">
+                              <Clock className="w-3 h-3 inline mr-1" />{section.duration} minutes
+                            </span>
+                            <span>•</span>
+                            <span>{section.questions?.length || 0} questions</span>
+                          </p>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {editingSectionId !== section._id && (
+                        <button
+                          onClick={() => {
+                            setEditingSectionId(section._id);
+                            setEditSectionData({ title: section.title, duration: section.duration });
+                          }}
+                          className="btn-ghost btn-sm text-slate-500"
+                          title="Edit section info"
+                        >
+                          <Edit className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      <button
+                        onClick={() => openBank(section._id)}
+                        className="btn-secondary btn-sm text-xs"
+                      >
+                        <BookOpen className="w-3.5 h-3.5" /> Bank
+                      </button>
+                      <button
+                        onClick={() => startAddQ(section._id)}
+                        className="btn-primary btn-sm text-xs"
+                      >
+                        <Plus className="w-3.5 h-3.5" /> Add Question
+                      </button>
+                      <button
+                        onClick={() => handleDeleteSection(section._id)}
+                        className="btn-ghost btn-sm text-red-500 p-1.5 hover:bg-red-50 rounded-lg"
+                        title="Delete section"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {(!section.questions || section.questions.length === 0) ? (
+                    <div className="p-8 text-center bg-slate-50/50">
+                      <p className="text-xs text-slate-400">No questions in this section yet.</p>
+                      <button
+                        onClick={() => startAddQ(section._id)}
+                        className="btn-ghost btn-sm text-primary-600 mt-2 text-xs"
+                      >
+                        <Plus className="w-3.5 h-3.5" /> Add Question to {section.title}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-slate-100">
+                      {section.questions.map((q, idx) => (
+                        <QuestionCard
+                          key={q._id}
+                          q={q}
+                          idx={idx}
+                          onEdit={() => startEditQ(q, section._id)}
+                          onDelete={() => handleDeleteQ(q._id)}
+                          deleting={deletingQId === q._id}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+        ) : (
+          /* Single-Section flat questions list */
+          <div className="card">
+            <div className="card-header"><h2 className="font-semibold text-slate-800">Questions ({exam.questions?.length || 0})</h2></div>
+            {(!exam.questions || exam.questions.length === 0) ? (
+              <div className="card-body text-center py-16">
+                <BookOpen className="w-12 h-12 text-slate-200 mx-auto mb-3" />
+                <p className="text-slate-500 font-medium">No questions yet</p>
+                <button onClick={() => startAddQ()} className="btn-primary mt-4"><Plus className="w-4 h-4" /> Add First Question</button>
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-50">
+                {exam.questions.map((q, idx) => (
+                  <QuestionCard
+                    key={q._id}
+                    q={q}
+                    idx={idx}
+                    onEdit={() => startEditQ(q)}
+                    onDelete={() => handleDeleteQ(q._id)}
+                    deleting={deletingQId === q._id}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </AdminLayout>
   );

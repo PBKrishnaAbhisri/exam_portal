@@ -460,17 +460,20 @@ export function stopDetectionLoop() {
 }
 
 // ── 9. Snapshot Utility ───────────────────────────────────────────────────────
-/**
- * Captures a snapshot from the webcam video element as a base64 JPEG.
- *
- * @param {HTMLVideoElement} video
- * @returns {string|null} Base64 JPEG data URL
- */
 export function captureSnapshot(video) {
-  if (!video || video.readyState < 2 || !video.videoWidth) return null;
-  const canvas = document.createElement('canvas');
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
-  canvas.getContext('2d').drawImage(video, 0, 0);
-  return canvas.toDataURL('image/jpeg', 0.55);
+  if (!video) return null;
+  try {
+    const width = video.videoWidth || video.clientWidth || 480;
+    const height = video.videoHeight || video.clientHeight || 360;
+    if (width <= 0 || height <= 0) return null;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, width, height);
+    return canvas.toDataURL('image/jpeg', 0.65);
+  } catch (err) {
+    console.error('[captureSnapshot] Error capturing evidence frame:', err);
+    return null;
+  }
 }
