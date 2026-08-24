@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import AdminLayout from '../../components/common/AdminLayout';
 import { getAllExamsAdmin, deleteExam, togglePublishResults, notifyStudentsExam } from '../../api';
 import toast from 'react-hot-toast';
-import { Plus, Edit, Trash2, BarChart3, Eye, EyeOff, Search, AlertTriangle, X, Mail } from 'lucide-react';
+import { Plus, Edit, Trash2, BarChart3, Eye, EyeOff, Search, AlertTriangle, X, Mail, Check } from 'lucide-react';
 
 const ExamList = () => {
   const [exams, setExams] = useState([]);
@@ -86,8 +86,9 @@ const ExamList = () => {
       const result = await notifyStudentsExam(id, (progress) => {
         setNotifyProgress(prev => ({ ...prev, [id]: progress }));
       });
-      if (result?.sentCount > 0) {
-        toast.success(`✉ Sent ${result.sentCount}/${result.total} emails!`);
+      if (result?.sentCount > 0 || result?.notificationsSent) {
+        setExams((prev) => prev.map((e) => (e._id === id ? { ...e, notificationsSent: true } : e)));
+        toast.success(`✉ Sent ${result.sentCount || 0}/${result.total} emails!`);
       } else if (result?.reason) {
         toast(result.reason, { icon: '⚠️', duration: 6000 });
       } else {
@@ -236,8 +237,16 @@ const ExamList = () => {
                               type="button"
                               onClick={() => handleNotify(exam._id)}
                               disabled={notifyingId === exam._id}
-                              className={`btn-ghost btn-sm text-blue-600 hover:bg-blue-50 hover:text-blue-700 ${notifyingId === exam._id ? 'min-w-[90px] gap-1' : ''}`}
-                              title="Send email notifications to eligible students"
+                              className={`btn-sm rounded-lg transition-all flex items-center justify-center ${
+                                exam.notificationsSent
+                                  ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-300 font-semibold'
+                                  : 'btn-ghost text-blue-600 hover:bg-blue-50 hover:text-blue-700'
+                              } ${notifyingId === exam._id ? 'min-w-[90px] gap-1' : ''}`}
+                              title={
+                                exam.notificationsSent
+                                  ? 'Email notifications already sent for this exam. Click to re-send.'
+                                  : 'Send email notifications to eligible students'
+                              }
                             >
                               {notifyingId === exam._id ? (
                                 <>
@@ -248,6 +257,11 @@ const ExamList = () => {
                                       : '...'}
                                   </span>
                                 </>
+                              ) : exam.notificationsSent ? (
+                                <span className="flex items-center gap-1 text-xs">
+                                  <Check className="w-3.5 h-3.5 text-emerald-600 stroke-[2.5]" />
+                                  <span className="hidden sm:inline">Sent</span>
+                                </span>
                               ) : (
                                 <Mail className="w-3.5 h-3.5" />
                               )}

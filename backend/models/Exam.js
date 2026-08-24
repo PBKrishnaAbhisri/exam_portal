@@ -180,6 +180,19 @@ const examSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    // Email notification tracking
+    notificationsSent: {
+      type: Boolean,
+      default: false,
+    },
+    notifiedAt: {
+      type: Date,
+      default: null,
+    },
+    notificationsSentCount: {
+      type: Number,
+      default: 0,
+    },
     // Status tracking
     status: {
       type: String,

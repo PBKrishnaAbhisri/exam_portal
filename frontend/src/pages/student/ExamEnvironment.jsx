@@ -950,9 +950,9 @@ const ExamEnvironment = () => {
 
       {/* ── MAIN EXAM LAYOUT ─────────────────────────────────────────────────── */}
       <div className="flex flex-1 overflow-hidden relative">
-        {/* ── SECURITY WATERMARK OVERLAY ── */}
-        <div className="exam-watermark-container pointer-events-none select-none z-0">
-          {Array.from({ length: 28 }).map((_, i) => (
+        {/* ── SECURITY WATERMARK OVERLAY (SUPERIMPOSED ON TOP OF QUESTIONS & OPTIONS) ── */}
+        <div className="exam-watermark-container pointer-events-none select-none z-20">
+          {Array.from({ length: 42 }).map((_, i) => (
             <span key={i} className="exam-watermark-item">
               {user?.name || 'STUDENT'} • {user?.rollNumber || user?.email || 'RGUKT'} • {exam?.examCode || 'EXAM'}
             </span>

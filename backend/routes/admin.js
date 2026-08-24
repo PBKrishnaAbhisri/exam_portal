@@ -17,7 +17,7 @@ router.get('/analytics/:examId', authenticate, requireAdmin, async (req, res) =>
     const { branch, year, domain, search } = req.query;
 
     const exam = await Exam.findById(req.params.examId).select(
-      'title subject examCode marksPerQuestion negativeMarking negativeMarkValue isMultiSection sections questions'
+      'title subject examCode marksPerQuestion negativeMarking negativeMarkValue isMultiSection sections questions eligibleBranches eligibleYears eligibleDomains'
     );
     if (!exam) return res.status(404).json({ message: 'Exam not found.' });
 
@@ -131,6 +131,9 @@ router.get('/analytics/:examId', authenticate, requireAdmin, async (req, res) =>
         marksPerQuestion: exam.marksPerQuestion,
         negativeMarking: exam.negativeMarking,
         negativeMarkValue: exam.negativeMarkValue,
+        eligibleBranches: exam.eligibleBranches || [],
+        eligibleYears: exam.eligibleYears || [],
+        eligibleDomains: exam.eligibleDomains || [],
         totalQuestions,
         maxPossibleScore: maxPossible,
       },
@@ -532,10 +535,10 @@ router.get('/students/:id', authenticate, requireAdmin, async (req, res) => {
         ? Number(((totalScoreSum / maxScoreSum) * 100).toFixed(2))
         : 0;
 
-    // ── Compute domain-wise analytics across all student's submissions ───────
+    // ── Compute domain-wise analytics strictly across student's chosen domains ───────
     const domainStatsMap = {};
 
-    // Initialize with student's assigned domains
+    // Initialize ONLY with student's assigned/selected domains
     (student.domains || []).forEach((d) => {
       domainStatsMap[d] = {
         domain: d,
@@ -552,12 +555,15 @@ router.get('/students/:id', authenticate, requireAdmin, async (req, res) => {
       const exam = sub.examId;
       if (!exam) return;
 
-      const examDomains =
-        exam.eligibleDomains && exam.eligibleDomains.length > 0
-          ? exam.eligibleDomains
-          : student.domains && student.domains.length > 0
-          ? student.domains
-          : ['General'];
+      // Determine which of the student's domains this exam applies to
+      let applicableDomains = [];
+      if (exam.eligibleDomains && exam.eligibleDomains.length > 0) {
+        applicableDomains = (student.domains || []).filter((d) =>
+          exam.eligibleDomains.includes(d)
+        );
+      } else {
+        applicableDomains = student.domains || [];
+      }
 
       let totalQuestions =
         exam.isMultiSection && exam.sections?.length > 0
@@ -570,18 +576,8 @@ router.get('/students/:id', authenticate, requireAdmin, async (req, res) => {
       const isCompleted = ['submitted', 'auto-submitted'].includes(sub.status);
       const isPassed = pct >= 40;
 
-      examDomains.forEach((dom) => {
-        if (!domainStatsMap[dom]) {
-          domainStatsMap[dom] = {
-            domain: dom,
-            totalAttempted: 0,
-            completedExams: 0,
-            passedExams: 0,
-            totalScore: 0,
-            maxScore: 0,
-            highestPercentage: 0,
-          };
-        }
+      applicableDomains.forEach((dom) => {
+        if (!domainStatsMap[dom]) return; // Strictly only student's domains
 
         domainStatsMap[dom].totalAttempted++;
         if (isCompleted) {

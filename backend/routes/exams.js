@@ -5,18 +5,29 @@ const Exam = require('../models/Exam');
 const Submission = require('../models/Submission');
 const { upload } = require('../config/cloudinary');
 
-const { getDomainCategoriesForBranch, DOMAIN_CATEGORIES } = require('../config/domains');
+const {
+  getDomainCategoriesForBranch,
+  getDomainCategoriesForBranches,
+  getAllowedDomainsForBranches,
+  DOMAIN_CATEGORIES,
+} = require('../config/domains');
 
 // ─── PUBLIC ROUTES ──────────────────────────────────────────────────────────
 
 /**
  * @route   GET /api/exams/domains
- * @desc    Get domain list (optionally filtered by branch)
+ * @desc    Get domain list (optionally filtered by single branch or comma-separated branches)
  * @access  Public
  */
 router.get('/domains', async (req, res) => {
-  const { branch } = req.query;
-  const categories = branch ? getDomainCategoriesForBranch(branch) : DOMAIN_CATEGORIES;
+  const { branch, branches } = req.query;
+  let categories = DOMAIN_CATEGORIES;
+  if (branches) {
+    const branchList = typeof branches === 'string' ? branches.split(',').map(b => b.trim()).filter(Boolean) : branches;
+    categories = getDomainCategoriesForBranches(branchList);
+  } else if (branch) {
+    categories = getDomainCategoriesForBranch(branch);
+  }
   res.status(200).json({ categories });
 });
 
@@ -56,6 +67,16 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
       return res.status(400).json({
         message: 'Domain selection is mandatory. Please select at least one eligible domain.',
       });
+    }
+
+    if (eligibleBranches && Array.isArray(eligibleBranches) && eligibleBranches.length > 0) {
+      const allowed = getAllowedDomainsForBranches(eligibleBranches);
+      const invalid = eligibleDomains.filter((d) => !allowed.includes(d));
+      if (invalid.length > 0) {
+        return res.status(400).json({
+          message: `The following domains are not allowed for selected branches (${eligibleBranches.join(', ')}): ${invalid.join(', ')}`,
+        });
+      }
     }
 
     const exam = await Exam.create({
@@ -454,7 +475,14 @@ router.post('/:id/notify', authenticate, requireAdmin, async (req, res) => {
     });
 
     // Emit final summary
-    send({ done: true, ...result, total: students.length });
+    if (result && result.sentCount > 0) {
+      exam.notificationsSent = true;
+      exam.notifiedAt = new Date();
+      exam.notificationsSentCount = (exam.notificationsSentCount || 0) + result.sentCount;
+      await exam.save();
+    }
+
+    send({ done: true, ...result, total: students.length, notificationsSent: exam.notificationsSent });
     res.end();
   } catch (error) {
     console.error('Notify students error:', error);
@@ -468,37 +496,44 @@ router.patch('/:id/publish', authenticate, requireAdmin, async (req, res) => {
     const exam = await Exam.findById(req.params.id);
     if (!exam) return res.status(404).json({ message: 'Exam not found.' });
 
-    // ── Gating: cannot publish before exam ends (unless admin passes ?force=true) ─
+    // ── Gating: cannot publish before exam ends (unless admin passes force=true) ─
     const now = new Date();
-    if (!req.query.force && now < new Date(exam.endTime)) {
+    const isForce = req.query.force === 'true' || req.query.force === true;
+    if (!isForce && now < new Date(exam.endTime)) {
       return res.status(403).json({
         message: 'Results cannot be published before the exam has ended.',
         canPublishAt: exam.endTime,
       });
     }
 
-    const wasPublished = exam.publishResults;
-    exam.publishResults = !exam.publishResults;
+    const wasPublished = Boolean(exam.publishResults);
+    exam.publishResults = !wasPublished;
     await exam.save();
 
-    // ── Send email notifications when publishing ──────────────────────────────
-    let emailResult = null;
+    // ── Send email notifications asynchronously (non-blocking) ────────────────
     if (exam.publishResults && !wasPublished) {
-      const studentQuery = {};
-      if (exam.eligibleBranches?.length > 0) studentQuery.branch = { $in: exam.eligibleBranches };
-      if (exam.eligibleYears?.length > 0) studentQuery.year = { $in: exam.eligibleYears };
-      if (exam.eligibleDomains?.length > 0) studentQuery.domains = { $in: exam.eligibleDomains };
-      studentQuery.role = 'student';
-      studentQuery.status = 'active';
+      (async () => {
+        try {
+          const studentQuery = {};
+          if (exam.eligibleBranches?.length > 0) studentQuery.branch = { $in: exam.eligibleBranches };
+          if (exam.eligibleYears?.length > 0) studentQuery.year = { $in: exam.eligibleYears };
+          if (exam.eligibleDomains?.length > 0) studentQuery.domains = { $in: exam.eligibleDomains };
+          studentQuery.role = 'student';
+          studentQuery.status = 'active';
 
-      const students = await User.find(studentQuery).select('name email');
-      emailResult = await sendExamPublishNotifications(exam, students);
+          const students = await User.find(studentQuery).select('name email');
+          if (students.length > 0) {
+            await sendExamPublishNotifications(exam, students);
+          }
+        } catch (mailErr) {
+          console.warn('[Mailer] Background publish notification failed:', mailErr.message);
+        }
+      })();
     }
 
     res.status(200).json({
       message: `Results ${exam.publishResults ? 'published' : 'unpublished'} successfully.`,
       publishResults: exam.publishResults,
-      emailResult,
     });
   } catch (error) {
     console.error('Publish toggle error:', error);
@@ -538,12 +573,28 @@ router.get('/student/eligible', authenticate, requireStudent, async (req, res) =
     const { branch, year, domains: studentDomains } = req.user;
     const now = new Date();
 
-    // Build query: branch & year must match; if exam has eligibleDomains set,
-    // student must share at least one domain with it
-    const query = {
-      eligibleBranches: branch,
-      eligibleYears: year,
-    };
+    // Build query: branch & year match or are unrestricted ([] / not set)
+    const andConditions = [];
+    if (branch) {
+      andConditions.push({
+        $or: [
+          { eligibleBranches: { $size: 0 } },
+          { eligibleBranches: { $exists: false } },
+          { eligibleBranches: branch },
+        ],
+      });
+    }
+    if (year) {
+      andConditions.push({
+        $or: [
+          { eligibleYears: { $size: 0 } },
+          { eligibleYears: { $exists: false } },
+          { eligibleYears: Number(year) },
+        ],
+      });
+    }
+
+    const query = andConditions.length > 0 ? { $and: andConditions } : {};
 
     const exams = await Exam.find(query)
       .select('-questions.correctOptions -questions.acceptedTexts -questions.numericValue -questions.numericTolerance -unlockCode')
@@ -633,9 +684,8 @@ router.get('/bank/questions', authenticate, requireAdmin, async (req, res) => {
 
     const formattedExams = exams.map((e) => {
       const qCount =
-        e.isMultiSection && e.sections?.length > 0
-          ? e.sections.reduce((sum, s) => sum + (s.questions?.length || 0), 0)
-          : (e.questions?.length || 0);
+        (e.sections || []).reduce((sum, s) => sum + (s.questions?.length || 0), 0) +
+        (e.questions?.length || 0);
 
       return {
         _id: e._id,

@@ -569,8 +569,13 @@ const ExamAnalytics = () => {
                 onChange={(e) => setBranch(e.target.value)}
                 className="form-select text-sm py-2"
               >
-                <option value="ALL">All Branches</option>
-                {BRANCHES.filter((b) => b !== 'ALL').map((b) => (
+                <option value="ALL">
+                  {exam?.eligibleBranches?.length > 0 ? 'All Eligible Branches' : 'All Branches'}
+                </option>
+                {(exam?.eligibleBranches?.length > 0
+                  ? exam.eligibleBranches
+                  : BRANCHES.filter((b) => b !== 'ALL')
+                ).map((b) => (
                   <option key={b} value={b}>
                     {b} Branch
                   </option>
@@ -587,8 +592,13 @@ const ExamAnalytics = () => {
                 onChange={(e) => setYear(e.target.value)}
                 className="form-select text-sm py-2"
               >
-                <option value="ALL">All Years</option>
-                {YEARS.filter((y) => y !== 'ALL').map((y) => (
+                <option value="ALL">
+                  {exam?.eligibleYears?.length > 0 ? 'All Eligible Years' : 'All Years'}
+                </option>
+                {(exam?.eligibleYears?.length > 0
+                  ? exam.eligibleYears.map(String)
+                  : YEARS.filter((y) => y !== 'ALL')
+                ).map((y) => (
                   <option key={y} value={y}>
                     Year {y}
                   </option>
@@ -605,16 +615,24 @@ const ExamAnalytics = () => {
                 onChange={(e) => setDomain(e.target.value)}
                 className="form-select text-sm py-2"
               >
-                <option value="ALL">All Domains</option>
-                {domainCategories.map((cat) => (
-                  <optgroup key={cat.category} label={cat.category}>
-                    {cat.domains.map((d) => (
+                <option value="ALL">
+                  {exam?.eligibleDomains?.length > 0 ? 'All Eligible Domains' : 'All Domains'}
+                </option>
+                {exam?.eligibleDomains?.length > 0
+                  ? exam.eligibleDomains.map((d) => (
                       <option key={d} value={d}>
                         {d}
                       </option>
+                    ))
+                  : domainCategories.map((cat) => (
+                      <optgroup key={cat.category} label={cat.category}>
+                        {cat.domains.map((d) => (
+                          <option key={d} value={d}>
+                            {d}
+                          </option>
+                        ))}
+                      </optgroup>
                     ))}
-                  </optgroup>
-                ))}
               </select>
             </div>
           </div>

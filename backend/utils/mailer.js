@@ -119,4 +119,48 @@ const sendExamPublishNotifications = async (exam, students, onProgress = null) =
   };
 };
 
-module.exports = { sendExamPublishNotifications };
+/**
+ * Send Password Reset OTP Email
+ */
+const sendPasswordResetOTP = async (email, name, otp) => {
+  const transporter = createTransporter();
+  if (!transporter) {
+    console.warn('[Mailer] SMTP not configured. OTP generated for dev:', otp);
+    return { success: false, reason: 'SMTP not configured' };
+  }
+
+  try {
+    await transporter.sendMail({
+      from: `"RGUKT Exam Portal" <${process.env.SMTP_USER}>`,
+      to: email,
+      subject: `🔐 Password Reset OTP: ${otp}`,
+      html: `
+        <div style="font-family: Inter, Arial, sans-serif; max-width: 500px; margin: 0 auto; background: #f8fafc; padding: 24px; border-radius: 12px;">
+          <div style="background: #2563eb; padding: 20px; border-radius: 8px 8px 0 0; text-align: center;">
+            <h1 style="color: white; margin: 0; font-size: 18px;">🔐 Password Reset Request</h1>
+            <p style="color: #bfdbfe; margin: 4px 0 0 0; font-size: 13px;">RGUKT Exam Portal</p>
+          </div>
+          <div style="background: white; padding: 24px; border-radius: 0 0 8px 8px; border: 1px solid #e2e8f0; border-top: none;">
+            <p style="color: #475569; margin: 0 0 12px 0;">Hi <strong>${name || 'Student'}</strong>,</p>
+            <p style="color: #475569; margin: 0 0 20px 0; font-size: 14px;">We received a request to reset your ExamPortal password. Use the 6-digit OTP below to complete the reset:</p>
+            
+            <div style="background: #f1f5f9; padding: 16px; border-radius: 8px; text-align: center; margin-bottom: 20px;">
+              <span style="font-family: monospace; font-size: 32px; font-weight: bold; letter-spacing: 6px; color: #2563eb;">${otp}</span>
+              <p style="color: #64748b; font-size: 12px; margin: 8px 0 0 0;">This OTP is valid for 10 minutes.</p>
+            </div>
+
+            <p style="color: #94a3b8; font-size: 12px; margin: 0; text-align: center;">
+              If you didn't request this password reset, please ignore this email.
+            </p>
+          </div>
+        </div>
+      `,
+    });
+    return { success: true };
+  } catch (err) {
+    console.error('[Mailer] Failed to send OTP email:', err.message);
+    return { success: false, error: err.message };
+  }
+};
+
+module.exports = { sendExamPublishNotifications, sendPasswordResetOTP };

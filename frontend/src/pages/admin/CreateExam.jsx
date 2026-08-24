@@ -39,8 +39,23 @@ const CreateExam = () => {
   });
 
   useEffect(() => {
-    getDomains().then(({ data }) => setAllDomainCategories(data.categories || []));
-  }, []);
+    if (form.eligibleBranches && form.eligibleBranches.length > 0) {
+      getDomains(form.eligibleBranches)
+        .then(({ data }) => {
+          const cats = data.categories || [];
+          setAllDomainCategories(cats);
+          const allowedDomains = cats.flatMap((c) => c.domains);
+          setForm((prev) => ({
+            ...prev,
+            eligibleDomains: prev.eligibleDomains.filter((d) => allowedDomains.includes(d)),
+          }));
+        })
+        .catch(() => {});
+    } else {
+      setAllDomainCategories([]);
+      setForm((prev) => ({ ...prev, eligibleDomains: [] }));
+    }
+  }, [form.eligibleBranches]);
 
   // Sync total duration from sections when in multi-section mode
   useEffect(() => {
@@ -386,25 +401,33 @@ const CreateExam = () => {
                 <Tag className="w-3.5 h-3.5 text-primary-600" /> Eligible Domains *{' '}
                 <span className="text-primary-700 font-medium text-xs">(Mandatory — select at least one domain)</span>
               </label>
-              <div className="space-y-3 max-h-48 overflow-y-auto border border-slate-200 rounded-xl p-3 bg-slate-50">
-                {allDomainCategories.map(cat => (
-                  <div key={cat.category}>
-                    <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">{cat.category}</p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {cat.domains.map(domain => {
-                        const selected = form.eligibleDomains.includes(domain);
-                        return (
-                          <button key={domain} type="button" onClick={() => toggleDomain(domain)}
-                            className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border transition-all ${selected ? 'bg-primary-600 text-white border-primary-600' : 'bg-white text-slate-600 border-slate-200 hover:border-primary-300'}`}>
-                            {selected ? <CheckSquare className="w-3 h-3" /> : <Square className="w-3 h-3" />}
-                            {domain}
-                          </button>
-                        );
-                      })}
+              {form.eligibleBranches.length === 0 ? (
+                <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-xs font-medium flex items-center gap-2">
+                  <span>⚠️ Please select at least one eligible branch above first to view and select domains.</span>
+                </div>
+              ) : allDomainCategories.length === 0 ? (
+                <div className="flex justify-center py-4"><div className="spinner w-5 h-5" /></div>
+              ) : (
+                <div className="space-y-3 max-h-48 overflow-y-auto border border-slate-200 rounded-xl p-3 bg-slate-50">
+                  {allDomainCategories.map(cat => (
+                    <div key={cat.category}>
+                      <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">{cat.category}</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {cat.domains.map(domain => {
+                          const selected = form.eligibleDomains.includes(domain);
+                          return (
+                            <button key={domain} type="button" onClick={() => toggleDomain(domain)}
+                              className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border transition-all ${selected ? 'bg-primary-600 text-white border-primary-600' : 'bg-white text-slate-600 border-slate-200 hover:border-primary-300'}`}>
+                              {selected ? <CheckSquare className="w-3 h-3" /> : <Square className="w-3 h-3" />}
+                              {domain}
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
               {form.eligibleDomains.length > 0 && (
                 <p className="text-xs text-slate-500 mt-1.5">{form.eligibleDomains.length} domain{form.eligibleDomains.length > 1 ? 's' : ''} targeted</p>
               )}

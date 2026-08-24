@@ -107,7 +107,19 @@ export const addSection = (examId, data) => API.post(`/exams/${examId}/sections`
 export const updateSection = (examId, sectionId, data) => API.put(`/exams/${examId}/sections/${sectionId}`, data);
 export const deleteSection = (examId, sectionId) => API.delete(`/exams/${examId}/sections/${sectionId}`);
 
-export const getDomains = (branch) => API.get('/exams/domains', { params: branch ? { branch } : {} });
+export const getDomains = (branch) => {
+  const params = {};
+  if (branch) {
+    if (Array.isArray(branch)) {
+      params.branches = branch.join(',');
+    } else if (typeof branch === 'string' && branch.includes(',')) {
+      params.branches = branch;
+    } else {
+      params.branch = branch;
+    }
+  }
+  return API.get('/exams/domains', { params });
+};
 export const getQuestionBank = () => API.get('/exams/bank/questions');
 export const getQuestionBankExam = (examId) => API.get(`/exams/bank/questions?examId=${examId}`);
 

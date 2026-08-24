@@ -393,6 +393,85 @@ router.get('/my/:examId', authenticate, requireStudent, async (req, res) => {
 
 
 /**
+ * @route   GET /api/submissions/my-results
+ * @desc    Get all exam submissions with results for the logged-in student
+ * @access  Student
+ */
+router.get('/my-results', authenticate, requireStudent, async (req, res) => {
+  try {
+    const submissions = await Submission.find({ studentId: req.user._id })
+      .populate({
+        path: 'examId',
+        select: 'title subject examCode duration startTime endTime marksPerQuestion negativeMarking negativeMarkValue eligibleDomains eligibleBranches eligibleYears publishResults isMultiSection sections questions',
+      })
+      .sort({ createdAt: -1 });
+
+    const results = submissions
+      .filter((s) => s.examId) // filter out deleted exams
+      .map((s) => {
+        const exam = s.examId;
+        const isPublished = Boolean(exam.publishResults);
+
+        let breakdown = [];
+        if (isPublished && s.answers) {
+          const allQuestions =
+            exam.isMultiSection && exam.sections?.length > 0
+              ? exam.sections.flatMap((sec) => sec.questions || [])
+              : exam.questions || [];
+
+          breakdown = s.answers.map((answer) => {
+            const question = allQuestions.find(
+              (q) => q._id.toString() === answer.questionId.toString()
+            );
+            return {
+              questionId: answer.questionId,
+              questionText: question?.questionText || '',
+              questionType: answer.questionType,
+              imageUrl: question?.imageUrl || null,
+              options: question?.options || [],
+              selectedOptions: answer.selectedOptions,
+              textResponse: answer.textResponse,
+              isCorrect: answer.isCorrect,
+              score: answer.score,
+              isFlaggedForManualReview: answer.isFlaggedForManualReview,
+            };
+          });
+        }
+
+        return {
+          submissionId: s._id,
+          exam: {
+            _id: exam._id,
+            title: exam.title,
+            subject: exam.subject,
+            examCode: exam.examCode,
+            duration: exam.duration,
+            startTime: exam.startTime,
+            endTime: exam.endTime,
+            marksPerQuestion: exam.marksPerQuestion,
+            eligibleDomains: exam.eligibleDomains || [],
+            isMultiSection: exam.isMultiSection,
+            sections: exam.sections || [],
+            publishResults: isPublished,
+          },
+          published: isPublished,
+          status: s.status,
+          totalScore: s.totalScore,
+          maxPossibleScore: s.maxPossibleScore,
+          submittedAt: s.submittedAt,
+          violationCount: s.violationCount,
+          breakdown,
+        };
+      });
+
+    res.status(200).json({ results });
+  } catch (error) {
+    console.error('Get all my results error:', error);
+    res.status(500).json({ message: 'Server error fetching student results.' });
+  }
+});
+
+/**
  * @route   GET /api/submissions/result/:examId
  * @desc    Get student result for an exam (only after publish)
  * @access  Student

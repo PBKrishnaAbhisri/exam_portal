@@ -29,15 +29,6 @@ const StudentProfile = () => {
   const [questionFilter, setQuestionFilter] = useState('ALL'); // 'ALL' | 'CORRECT' | 'WRONG' | 'UNANSWERED'
   const [zoomSnapshot, setZoomSnapshot] = useState(null);
 
-  useEffect(() => {
-    getDomains()
-      .then(({ data }) => {
-        const flattened = (data.categories || []).flatMap((c) => c.domains);
-        setAllDomains(Array.from(new Set(flattened)));
-      })
-      .catch(() => {});
-  }, []);
-
   const fetchProfile = useCallback(async () => {
     setLoading(true);
     try {
@@ -721,8 +712,8 @@ const StudentProfile = () => {
                 onChange={(e) => setDomainFilter(e.target.value)}
                 className="form-select text-xs py-1.5 px-2.5 max-w-xs"
               >
-                <option value="ALL">All Domains</option>
-                {allDomains.map((d) => (
+                <option value="ALL">All Student's Domains</option>
+                {(student?.domains || []).map((d) => (
                   <option key={d} value={d}>
                     {d}
                   </option>

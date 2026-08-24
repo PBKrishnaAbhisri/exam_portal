@@ -130,10 +130,33 @@ const getDomainCategoriesForBranch = (branch) => {
   return DOMAIN_CATEGORIES.filter(c => allowedCats.includes(c.category));
 };
 
+/**
+ * Returns the domain categories filtered for a given list of branches (union).
+ * If branches is empty or not provided, returns empty array.
+ */
+const getDomainCategoriesForBranches = (branches) => {
+  if (!branches || !Array.isArray(branches) || branches.length === 0) return [];
+  const allowedCatSet = new Set();
+  branches.forEach((b) => {
+    const cats = BRANCH_CATEGORY_MAP[b] || DOMAIN_CATEGORIES.map((c) => c.category);
+    cats.forEach((c) => allowedCatSet.add(c));
+  });
+  return DOMAIN_CATEGORIES.filter((c) => allowedCatSet.has(c.category));
+};
+
+/**
+ * Returns the flattened list of all domain strings allowed for a given list of branches.
+ */
+const getAllowedDomainsForBranches = (branches) => {
+  return getDomainCategoriesForBranches(branches).flatMap((c) => c.domains);
+};
+
 module.exports = {
   DOMAIN_CATEGORIES,
   UNIVERSAL_CATEGORIES,
   BRANCH_CATEGORY_MAP,
   getAllowedDomainsForBranch,
   getDomainCategoriesForBranch,
+  getDomainCategoriesForBranches,
+  getAllowedDomainsForBranches,
 };
