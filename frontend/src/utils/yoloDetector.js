@@ -96,19 +96,31 @@ export async function initYOLO(onProgress) {
 
   // PRIMARY: Configure dynamic CDN path matching the exact installed version
   ort.env.wasm.wasmPaths = cdnWasmPath;
-  ort.env.wasm.numThreads = navigator.hardwareConcurrency
-    ? Math.min(navigator.hardwareConcurrency, 4)
-    : 2;
+  ort.env.wasm.numThreads = 1; // Single-thread prevents SharedArrayBuffer memory access out-of-bounds issues
+  ort.env.wasm.simd = true;
+  ort.env.wasm.proxy = false;
 
   let primaryCdnError = null;
+
+  // Session options optimized for large models (104MB YOLOv8m)
+  const gpuOptions = {
+    executionProviders: ['webgpu'],
+    graphOptimizationLevel: 'basic',
+    enableCpuMemArena: false,
+    enableMemPattern: false,
+  };
+
+  const wasmOptions = {
+    executionProviders: ['wasm'],
+    graphOptimizationLevel: 'basic',
+    enableCpuMemArena: false,
+    enableMemPattern: false,
+  };
 
   // ── ATTEMPT 1 (PRIMARY): CDN Path with WebGPU ──
   try {
     report(30);
-    ortSession = await ort.InferenceSession.create(MODEL_URL, {
-      executionProviders: ['webgpu'],
-      graphOptimizationLevel: 'all',
-    });
+    ortSession = await ort.InferenceSession.create(MODEL_URL, gpuOptions);
     activeBackend = 'webgpu';
     report(80);
   } catch (gpuError) {
@@ -119,10 +131,7 @@ export async function initYOLO(onProgress) {
   if (!ortSession) {
     try {
       report(50);
-      ortSession = await ort.InferenceSession.create(MODEL_URL, {
-        executionProviders: ['wasm'],
-        graphOptimizationLevel: 'all',
-      });
+      ortSession = await ort.InferenceSession.create(MODEL_URL, wasmOptions);
       activeBackend = 'wasm';
       report(80);
     } catch (wasmError) {
@@ -137,19 +146,19 @@ export async function initYOLO(onProgress) {
     try {
       report(60);
       ort.env.wasm.wasmPaths = '/models/';
+      ort.env.wasm.numThreads = 1;
       
       // Try WebGPU locally
       try {
-        ortSession = await ort.InferenceSession.create(MODEL_URL, {
-          executionProviders: ['webgpu'],
-          graphOptimizationLevel: 'all',
-        });
+        ortSession = await ort.InferenceSession.create(MODEL_URL, gpuOptions);
         activeBackend = 'webgpu';
       } catch {
-        // Try WASM locally
+        // Try WASM locally with minimal optimization
         ortSession = await ort.InferenceSession.create(MODEL_URL, {
           executionProviders: ['wasm'],
-          graphOptimizationLevel: 'all',
+          graphOptimizationLevel: 'disabled',
+          enableCpuMemArena: false,
+          enableMemPattern: false,
         });
         activeBackend = 'wasm';
       }
@@ -221,21 +230,19 @@ function letterboxFrame(video) {
   return { scale, padX, padY };
 }
 
-// Pre-allocated static buffer for CHW Float32 tensor (avoids 4.9MB allocation every 250ms)
-const tensorBuffer = new Float32Array(3 * MODEL_INPUT_SIZE * MODEL_INPUT_SIZE);
-
 // ── 4. Preprocessing: Frame to Float32 Tensor (CHW, /255) ─────────────────────
 function frameToTensor() {
   const { data } = lctx.getImageData(0, 0, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE);
   const size = MODEL_INPUT_SIZE * MODEL_INPUT_SIZE;
+  const tensorData = new Float32Array(3 * size);
 
   for (let i = 0; i < size; i++) {
-    tensorBuffer[i] = data[i * 4] / 255;             // R
-    tensorBuffer[size + i] = data[i * 4 + 1] / 255;  // G
-    tensorBuffer[2 * size + i] = data[i * 4 + 2] / 255; // B
+    tensorData[i] = data[i * 4] / 255;             // R
+    tensorData[size + i] = data[i * 4 + 1] / 255;  // G
+    tensorData[2 * size + i] = data[i * 4 + 2] / 255; // B
   }
 
-  return new ort.Tensor('float32', tensorBuffer, [1, 3, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE]);
+  return new ort.Tensor('float32', tensorData, [1, 3, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE]);
 }
 
 // ── 5. Postprocessing: Decode YOLOv8 Output Tensor ───────────────────────────

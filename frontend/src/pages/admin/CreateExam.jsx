@@ -36,6 +36,7 @@ const CreateExam = () => {
     eligibleBranches: [], eligibleYears: [], eligibleDomains: [],
     shuffleQuestions: false, shuffleOptions: false,
     unlockCode: '', violationThreshold: 3,
+    examType: null, // 'weekly' | 'monthly' | null
   });
 
   useEffect(() => {
@@ -193,6 +194,38 @@ const CreateExam = () => {
                 <label className="form-label">Description</label>
                 <input id="exam-desc" name="description" value={form.description} onChange={handleChange}
                   placeholder="Optional exam description" className="form-input" />
+              </div>
+            </div>
+
+            {/* Exam Recurrence Type */}
+            <div className="pt-2 border-t border-slate-100">
+              <label className="form-label mb-2">
+                Exam Recurrence Type <span className="text-slate-400 font-normal">(optional)</span>
+              </label>
+              <div className="flex gap-2">
+                {[
+                  { value: null,      label: 'None',    desc: 'Light green',  cls: 'border-emerald-300 bg-emerald-50 text-emerald-800' },
+                  { value: 'weekly',  label: 'Weekly',  desc: 'Red',          cls: 'border-red-300 bg-red-50 text-red-800' },
+                  { value: 'monthly', label: 'Monthly', desc: 'Blue',         cls: 'border-blue-300 bg-blue-50 text-blue-800' },
+                ].map(({ value, label, desc, cls }) => (
+                  <button
+                    key={String(value)}
+                    type="button"
+                    id={`exam-type-${value ?? 'none'}`}
+                    onClick={() => setForm(prev => ({ ...prev, examType: value }))}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-xl border-2 text-sm font-semibold transition-all ${
+                      form.examType === value
+                        ? cls + ' shadow-sm'
+                        : 'border-slate-200 text-slate-500 hover:border-slate-300'
+                    }`}
+                  >
+                    <span className={`w-3 h-3 rounded-full ${
+                      value === null ? 'bg-emerald-400' : value === 'weekly' ? 'bg-red-500' : 'bg-blue-500'
+                    }`} />
+                    {label}
+                    <span className="text-xs font-normal opacity-70">({desc})</span>
+                  </button>
+                ))}
               </div>
             </div>
 

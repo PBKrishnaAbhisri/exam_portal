@@ -205,6 +205,13 @@ const examSchema = new mongoose.Schema(
       trim: true,
       default: '',
     },
+    // Optional recurrence type — controls color on student dashboard
+    // 'weekly' → red, 'monthly' → blue, null → light green
+    examType: {
+      type: String,
+      enum: ['weekly', 'monthly', null],
+      default: null,
+    },
   },
   {
     timestamps: true,

@@ -1,12 +1,13 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import StudentLayout from '../../components/common/StudentLayout';
 import { useAuth } from '../../context/AuthContext';
-import { updateProfile, getDomains, changePassword } from '../../api';
+import { updateProfile, getDomains, changePassword, uploadResume, deleteResume } from '../../api';
 import toast from 'react-hot-toast';
 import {
   User, BookOpen, CheckSquare, Square, Save, Tag,
   Edit2, X, GraduationCap, Hash, Mail, Award, Layers,
-  Lock, KeyRound, CheckCircle2, ShieldCheck, AlertTriangle
+  Lock, KeyRound, CheckCircle2, ShieldCheck, AlertTriangle,
+  FileText, Upload, Trash2, RefreshCw
 } from 'lucide-react';
 
 const StudentProfile = () => {
@@ -17,6 +18,11 @@ const StudentProfile = () => {
   const [selectedDomains, setSelectedDomains] = useState([]);
   const [domainCategories, setDomainCategories] = useState([]);
   const [saving, setSaving] = useState(false);
+
+  // Resume state
+  const [resumeUploading, setResumeUploading] = useState(false);
+  const [resumeDeleting, setResumeDeleting] = useState(false);
+  const resumeInputRef = useRef(null);
 
   // Password Change State
   const [showPasswordModal, setShowPasswordModal] = useState(false);
@@ -72,6 +78,61 @@ const StudentProfile = () => {
       toast.error(err.response?.data?.message || 'Failed to update profile.');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleResumeUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.type !== 'application/pdf') {
+      toast.error('Only PDF files are allowed.');
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error('Resume must be smaller than 2 MB.');
+      return;
+    }
+    const formData = new FormData();
+    formData.append('resume', file);
+    setResumeUploading(true);
+    try {
+      const { data } = await uploadResume(formData);
+      // Update auth context so banner disappears
+      const token = localStorage.getItem('token');
+      login({
+        ...user,
+        resumeUrl: data.resumeUrl,
+        resumeOriginalName: data.resumeOriginalName,
+        resumeUploadedAt: data.resumeUploadedAt,
+      }, token);
+      toast.success('Resume uploaded successfully!');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Failed to upload resume.');
+    } finally {
+      setResumeUploading(false);
+      if (resumeInputRef.current) resumeInputRef.current.value = '';
+    }
+  };
+
+  const handleResumeDelete = async () => {
+    if (!window.confirm('Are you sure you want to delete your resume? A resume is mandatory for your account, so you must upload a new one immediately.')) return;
+    setResumeDeleting(true);
+    try {
+      await deleteResume();
+      const token = localStorage.getItem('token');
+      // Immediately clear resume fields in auth context to trigger persistent warnings
+      login({
+        ...user,
+        resumeUrl: null,
+        resumePublicId: null,
+        resumeOriginalName: null,
+        resumeUploadedAt: null,
+      }, token);
+      toast.error('Resume deleted. Please upload a new resume — it is mandatory.', { duration: 5000 });
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Failed to delete resume.');
+    } finally {
+      setResumeDeleting(false);
     }
   };
 
@@ -208,6 +269,104 @@ const StudentProfile = () => {
                       className="px-3 py-1 bg-amber-600 text-white rounded-lg text-xs font-semibold hover:bg-amber-700 shrink-0"
                     >
                       Select Now
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Resume card */}
+            <div className={`card ${!user?.resumeUrl ? 'border-2 border-red-400 bg-red-50/20 ring-2 ring-red-100 shadow-sm' : ''}`}>
+              <div className="card-header flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <FileText className={`w-4 h-4 ${!user?.resumeUrl ? 'text-red-600' : 'text-primary-600'}`} />
+                  <h2 className="font-semibold text-slate-800">Student Resume</h2>
+                </div>
+                {!user?.resumeUrl ? (
+                  <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-300 animate-pulse flex items-center gap-1">
+                    <AlertTriangle className="w-3 h-3 text-red-600" /> Mandatory Upload Missing
+                  </span>
+                ) : (
+                  <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 border border-emerald-200">
+                    ✓ Uploaded
+                  </span>
+                )}
+              </div>
+              <div className="card-body">
+                {/* Hidden file input */}
+                <input
+                  ref={resumeInputRef}
+                  type="file"
+                  accept="application/pdf"
+                  className="hidden"
+                  id="resume-file-input"
+                  onChange={handleResumeUpload}
+                />
+
+                {user?.resumeUrl ? (
+                  <div className="flex items-center justify-between gap-3 p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-9 h-9 bg-emerald-100 rounded-lg flex items-center justify-center shrink-0">
+                        <FileText className="w-4 h-4 text-emerald-600" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-semibold text-slate-800 truncate max-w-[200px]">
+                          {user.resumeOriginalName || 'resume.pdf'}
+                        </p>
+                        {user.resumeUploadedAt && (
+                          <p className="text-xs text-slate-400">
+                            Uploaded {new Date(user.resumeUploadedAt).toLocaleDateString()}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        id="resume-replace-btn"
+                        type="button"
+                        disabled={resumeUploading || resumeDeleting}
+                        onClick={() => resumeInputRef.current?.click()}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-white border border-slate-200 text-slate-600 hover:border-primary-400 hover:text-primary-700 transition-all"
+                      >
+                        {resumeUploading ? <div className="spinner w-3.5 h-3.5" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                        Replace
+                      </button>
+                      <button
+                        id="resume-delete-btn"
+                        type="button"
+                        disabled={resumeUploading || resumeDeleting}
+                        onClick={handleResumeDelete}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-white border border-red-200 text-red-600 hover:bg-red-50 transition-all"
+                      >
+                        {resumeDeleting ? <div className="spinner w-3.5 h-3.5" /> : <Trash2 className="w-3.5 h-3.5" />}
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-4 bg-gradient-to-r from-red-50 to-rose-50 border-2 border-red-300 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                    <div className="flex items-start gap-3">
+                      <div className="w-9 h-9 bg-red-100 rounded-lg flex items-center justify-center shrink-0 mt-0.5">
+                        <AlertTriangle className="w-5 h-5 text-red-600 animate-pulse" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-bold text-red-900">
+                          Resume is Mandatory for Your Account
+                        </p>
+                        <p className="text-xs text-red-700 mt-0.5">
+                          Every registered student must have an active resume uploaded on file (PDF format only, max 2 MB).
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      id="resume-upload-btn"
+                      type="button"
+                      disabled={resumeUploading}
+                      onClick={() => resumeInputRef.current?.click()}
+                      className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-xl text-xs font-bold hover:bg-red-700 shrink-0 shadow-sm transition-all"
+                    >
+                      {resumeUploading ? <div className="spinner w-3.5 h-3.5" /> : <Upload className="w-4 h-4" />}
+                      Upload Resume PDF Now
                     </button>
                   </div>
                 )}

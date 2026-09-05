@@ -216,6 +216,9 @@ router.post(
         userData.cgpa = user.cgpa;
         userData.domains = user.domains || [];
         userData.status = user.status || 'active';
+        userData.resumeUrl = user.resumeUrl || null;
+        userData.resumeOriginalName = user.resumeOriginalName || null;
+        userData.resumeUploadedAt = user.resumeUploadedAt || null;
       }
 
       res.status(200).json({
@@ -295,6 +298,9 @@ router.patch('/profile', authenticate, requireStudent, async (req, res) => {
         cgpa: user.cgpa,
         domains: user.domains,
         status: user.status,
+        resumeUrl: user.resumeUrl || null,
+        resumeOriginalName: user.resumeOriginalName || null,
+        resumeUploadedAt: user.resumeUploadedAt || null,
       },
     });
   } catch (error) {
@@ -509,5 +515,135 @@ router.post(
     }
   }
 );
+
+// ─── RESUME UPLOAD ───────────────────────────────────────────────────────────
+const cloudinaryV2 = require('cloudinary').v2;
+const multer = require('multer');
+// Note: authenticate and requireStudent already required at line ~238
+
+cloudinaryV2.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
+// Use memory storage — we upload manually via upload_stream for full control
+const resumeUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 2 * 1024 * 1024 }, // 2 MB
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === 'application/pdf') {
+      cb(null, true);
+    } else {
+      cb(new Error('Only PDF files are allowed for resumes.'), false);
+    }
+  },
+});
+
+// Helper: upload buffer to Cloudinary as raw PDF
+const uploadToCloudinary = (buffer, publicId) =>
+  new Promise((resolve, reject) => {
+    const stream = cloudinaryV2.uploader.upload_stream(
+      {
+        resource_type: 'raw',
+        type: 'upload',
+        folder: 'exam-portal/resumes',
+        public_id: publicId,
+        access_mode: 'public',
+      },
+      (error, result) => {
+        if (error) return reject(error);
+        resolve(result);
+      }
+    );
+    stream.end(buffer);
+  });
+
+/**
+ * @route   POST /api/auth/upload-resume
+ * @desc    Upload or replace student resume (PDF, max 2 MB)
+ * @access  Student
+ */
+router.post(
+  '/upload-resume',
+  authenticate,
+  requireStudent,
+  (req, res, next) => {
+    resumeUpload.single('resume')(req, res, (err) => {
+      if (err) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          return res.status(400).json({ message: 'Resume must be smaller than 2 MB.' });
+        }
+        return res.status(400).json({ message: err.message || 'Resume upload failed.' });
+      }
+      next();
+    });
+  },
+  async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ message: 'No file uploaded.' });
+      }
+
+      const user = await User.findById(req.user._id);
+
+      // Delete old resume from Cloudinary if exists
+      if (user.resumePublicId) {
+        try {
+          await cloudinaryV2.uploader.destroy(user.resumePublicId, { resource_type: 'raw' });
+        } catch (_) { /* ignore cleanup errors */ }
+      }
+
+      // Upload buffer to Cloudinary (include .pdf in publicId for raw file extension preservation)
+      const publicId = `resume_${req.user._id}_${Date.now()}.pdf`;
+      const result = await uploadToCloudinary(req.file.buffer, publicId);
+
+      user.resumeUrl = result.secure_url;
+      user.resumePublicId = result.public_id;
+      user.resumeOriginalName = req.file.originalname;
+      user.resumeUploadedAt = new Date();
+      await user.save();
+
+      res.json({
+        message: 'Resume uploaded successfully.',
+        resumeUrl: user.resumeUrl,
+        resumeOriginalName: user.resumeOriginalName,
+        resumeUploadedAt: user.resumeUploadedAt,
+      });
+    } catch (error) {
+      console.error('Resume upload error:', error);
+      res.status(500).json({ message: 'Server error uploading resume.' });
+    }
+  }
+);
+
+/**
+ * @route   DELETE /api/auth/resume
+ * @desc    Delete student's resume
+ * @access  Student
+ */
+router.delete('/resume', authenticate, requireStudent, async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user.resumePublicId) {
+      return res.status(404).json({ message: 'No resume found to delete.' });
+    }
+
+    try {
+      await cloudinaryV2.uploader.destroy(user.resumePublicId, { resource_type: 'raw' });
+    } catch (_) { /* ignore cleanup errors */ }
+
+    user.resumeUrl = null;
+    user.resumePublicId = null;
+    user.resumeOriginalName = null;
+    user.resumeUploadedAt = null;
+    await user.save();
+
+    res.json({ message: 'Resume deleted successfully.' });
+  } catch (error) {
+    console.error('Resume delete error:', error);
+    res.status(500).json({ message: 'Server error deleting resume.' });
+  }
+});
 
 module.exports = router;

@@ -61,6 +61,7 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
       isMultiSection,
       sections,
       questions,
+      examType,
     } = req.body;
 
     if (!eligibleDomains || !Array.isArray(eligibleDomains) || eligibleDomains.length === 0) {
@@ -100,6 +101,7 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
       isMultiSection: isMultiSection || false,
       sections: sections || [],
       questions: questions || [],
+      examType: examType || null,
     });
 
     res.status(201).json({ message: 'Exam created successfully.', exam });
@@ -126,6 +128,7 @@ router.put('/:id', authenticate, requireAdmin, async (req, res) => {
       'shuffleQuestions', 'shuffleOptions',
       'unlockCode', 'violationThreshold',
       'isMultiSection', 'sections', 'questions',
+      'examType',
     ];
 
     allowedUpdates.forEach((field) => {

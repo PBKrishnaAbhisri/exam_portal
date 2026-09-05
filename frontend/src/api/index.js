@@ -156,4 +156,13 @@ export const getToppers = (params = {}) => API.get('/admin/toppers', { params })
 export const exportPDF = (examId, params = {}) => API.get(`/admin/export/pdf/${examId}`, { params, responseType: 'blob' });
 export const exportExcel = (examId, params = {}) => API.get(`/admin/export/excel/${examId}`, { params, responseType: 'blob' });
 
+// Resume
+export const uploadResume = (formData) =>
+  API.post('/auth/upload-resume', formData, { headers: { 'Content-Type': 'multipart/form-data' } });
+export const deleteResume = () => API.delete('/auth/resume');
+export const getStudentResumeDownloadUrl = (studentId) => {
+  const token = localStorage.getItem('token');
+  return `${API_BASE}/admin/students/${studentId}/resume?token=${token}`;
+};
+
 export default API;

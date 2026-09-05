@@ -417,7 +417,7 @@ router.get('/students', authenticate, requireAdmin, async (req, res) => {
 router.get('/students/:id', authenticate, requireAdmin, async (req, res) => {
   try {
     const student = await User.findOne({ _id: req.params.id, role: 'student' })
-      .select('name email rollNumber branch year cgpa status domains createdAt');
+      .select('name email rollNumber branch year cgpa status domains createdAt resumeUrl resumeOriginalName resumeUploadedAt');
 
     if (!student) {
       return res.status(404).json({ message: 'Student not found.' });
@@ -770,6 +770,104 @@ router.get('/toppers', authenticate, requireAdmin, async (req, res) => {
   } catch (error) {
     console.error('Get toppers error:', error);
     res.status(500).json({ message: 'Server error calculating toppers.' });
+  }
+});
+
+/**
+ * @route   GET /api/admin/students/:id/resume
+ * @desc    Download a student's resume
+ * @access  Admin
+ */
+router.get('/students/:id/resume', async (req, res) => {
+  try {
+    // Accept token from Authorization header OR ?token= query param (for direct browser links)
+    const jwt = require('jsonwebtoken');
+    let decoded;
+    const authHeader = req.headers.authorization;
+    const queryToken = req.query.token;
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : queryToken;
+    if (!token) return res.status(401).json({ message: 'Access denied. No token provided.' });
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch {
+      return res.status(401).json({ message: 'Invalid or expired token.' });
+    }
+    if (decoded.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required.' });
+    }
+
+    const student = await User.findById(req.params.id).select('resumeUrl resumePublicId resumeOriginalName role');
+    if (!student || student.role !== 'student') {
+      return res.status(404).json({ message: 'Student not found.' });
+    }
+    if (!student.resumeUrl) {
+      return res.status(404).json({ message: 'This student has not uploaded a resume yet.' });
+    }
+
+    const cloudinaryV2 = require('cloudinary').v2;
+    cloudinaryV2.config({
+      cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+      api_key: process.env.CLOUDINARY_API_KEY,
+      api_secret: process.env.CLOUDINARY_API_SECRET,
+    });
+
+    // Candidates to fetch from (signed private download URL first, then public URL with basic auth)
+    let urlsToTry = [];
+    if (student.resumePublicId) {
+      try {
+        const signedUrl = cloudinaryV2.utils.private_download_url(
+          student.resumePublicId,
+          '',
+          {
+            resource_type: 'raw',
+            type: 'upload',
+            expires_at: Math.floor(Date.now() / 1000) + 3600,
+          }
+        );
+        if (signedUrl) urlsToTry.push(signedUrl);
+      } catch (signErr) {
+        console.warn('[Admin Resume] Signed URL error:', signErr.message);
+      }
+    }
+    urlsToTry.push(student.resumeUrl);
+
+    const basicAuth = 'Basic ' + Buffer.from(`${process.env.CLOUDINARY_API_KEY}:${process.env.CLOUDINARY_API_SECRET}`).toString('base64');
+
+    let response = null;
+    for (const url of urlsToTry) {
+      try {
+        console.log(`[Admin Resume] Trying URL: ${url}`);
+        response = await fetch(url, {
+          headers: {
+            Authorization: basicAuth,
+          },
+        });
+        if (response.ok) break;
+      } catch (err) {
+        console.error('[Admin Resume] Fetch error for URL:', url, err.message);
+      }
+    }
+
+    if (!response || !response.ok) {
+      const status = response ? response.status : 'NO_RESPONSE';
+      console.error(`[Admin Resume] All attempts failed with status ${status} for student ${req.params.id}`);
+      return res.status(404).json({
+        message: 'Unable to access resume file from cloud storage. Please ask the student to re-upload their resume.'
+      });
+    }
+
+    const filename = student.resumeOriginalName || 'resume.pdf';
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', buffer.length);
+    return res.send(buffer);
+
+  } catch (error) {
+    console.error('Admin resume download error:', error);
+    res.status(500).json({ message: 'Server error fetching resume.' });
   }
 });
 

@@ -172,8 +172,18 @@ const ExamList = () => {
                     return (
                       <tr key={exam._id}>
                         <td>
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1.5 flex-wrap">
                             <p className="font-semibold text-slate-800">{exam.title}</p>
+                            {exam.examType === 'weekly' && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold bg-red-100 text-red-700 border border-red-200">
+                                Weekly
+                              </span>
+                            )}
+                            {exam.examType === 'monthly' && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold bg-blue-100 text-blue-700 border border-blue-200">
+                                Monthly
+                              </span>
+                            )}
                             {exam.isMultiSection && (
                               <span className="badge badge-purple text-[10px] py-0 px-1.5">
                                 Multi ({exam.sections?.length || 0})

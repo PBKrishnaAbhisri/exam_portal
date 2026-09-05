@@ -59,6 +59,11 @@ const userSchema = new mongoose.Schema(
       enum: ['active', 'alumni'],
       default: 'active',
     },
+    // Resume upload — stored in Cloudinary
+    resumeUrl: { type: String, default: null },
+    resumePublicId: { type: String, default: null },
+    resumeOriginalName: { type: String, default: null },
+    resumeUploadedAt: { type: Date, default: null },
   },
   {
     timestamps: true,

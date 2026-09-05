@@ -1,12 +1,13 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import AdminLayout from '../../components/common/AdminLayout';
-import { getStudentAdminProfile, getDomains } from '../../api';
+import { getStudentAdminProfile, getDomains, getStudentResumeDownloadUrl } from '../../api';
 import {
   ArrowLeft, Users, GraduationCap, Award, ShieldAlert,
   CheckCircle2, Clock, BookOpen, Tag, Filter, AlertTriangle,
   ChevronRight, Calendar, Mail, FileText, BarChart2, TrendingUp,
-  RotateCcw, Sparkles, Target, Eye, X, Maximize2, FileCheck, ExternalLink
+  RotateCcw, Sparkles, Target, Eye, X, Maximize2, FileCheck, ExternalLink,
+  Download
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
@@ -517,7 +518,47 @@ const StudentProfile = () => {
           </div>
         </div>
 
-        {/* KPI Metrics */}
+        {/* Resume download card */}
+        <div className="card">
+          <div className="card-header flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <FileText className="w-4 h-4 text-primary-600" />
+              <h3 className="font-semibold text-slate-800">Student Resume</h3>
+            </div>
+          </div>
+          <div className="card-body">
+            {student.resumeUrl ? (
+              <div className="flex items-center justify-between gap-4 p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 bg-emerald-100 rounded-lg flex items-center justify-center shrink-0">
+                    <FileText className="w-4 h-4 text-emerald-600" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-slate-800">{student.resumeOriginalName || 'resume.pdf'}</p>
+                    {student.resumeUploadedAt && (
+                      <p className="text-xs text-slate-400">Uploaded {new Date(student.resumeUploadedAt).toLocaleDateString()}</p>
+                    )}
+                  </div>
+                </div>
+                <a
+                  id="admin-download-resume"
+                  href={getStudentResumeDownloadUrl(student._id)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  download
+                  className="flex items-center gap-1.5 px-4 py-2 bg-primary-600 text-white rounded-xl text-sm font-semibold hover:bg-primary-700 transition-colors"
+                >
+                  <Download className="w-4 h-4" /> Download Resume
+                </a>
+              </div>
+            ) : (
+              <div className="flex items-center gap-3 p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-400 text-sm">
+                <FileText className="w-4 h-4 shrink-0" />
+                <p>This student has not uploaded a resume yet.</p>
+              </div>
+            )}
+          </div>
+        </div>
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="card p-4 flex items-center gap-3.5">
             <div className="w-11 h-11 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center flex-shrink-0">
