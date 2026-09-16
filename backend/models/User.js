@@ -30,7 +30,6 @@ const userSchema = new mongoose.Schema(
     // Student-specific fields
     rollNumber: {
       type: String,
-      sparse: true, // allows null for admins but unique for students
       uppercase: true,
       trim: true,
     },
