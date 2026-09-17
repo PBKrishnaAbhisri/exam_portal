@@ -112,60 +112,6 @@ router.post(
   }
 );
 
-/**
- * @route   POST /api/auth/signup/admin
- * @desc    Register a new admin
- * @access  Public
- */
-router.post(
-  '/signup/admin',
-  [
-    body('name').trim().notEmpty().withMessage('Name is required'),
-    body('email')
-      .isEmail().withMessage('Valid email is required')
-      .matches(/@rguktn\.ac\.in$/i)
-      .withMessage('Admin email must be a @rguktn.ac.in address'),
-    body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
-  ],
-  async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
-    }
-
-    const { name, email, password } = req.body;
-
-    try {
-      const existingUser = await User.findOne({ email });
-      if (existingUser) {
-        return res.status(409).json({ message: 'Email already registered.' });
-      }
-
-      const user = await User.create({
-        name,
-        email,
-        password,
-        role: 'admin',
-      });
-
-      const token = generateToken(user);
-
-      res.status(201).json({
-        message: 'Admin registered successfully.',
-        token,
-        user: {
-          id: user._id,
-          name: user.name,
-          email: user.email,
-          role: user.role,
-        },
-      });
-    } catch (error) {
-      console.error('Admin signup error:', error);
-      res.status(500).json({ message: 'Server error during registration.' });
-    }
-  }
-);
 
 /**
  * @route   POST /api/auth/login

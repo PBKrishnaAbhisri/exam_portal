@@ -28,7 +28,8 @@ const Login = () => {
       const { data } = await loginUser(form);
       login(data.user, data.token);
       toast.success(`Welcome back, ${data.user.name}!`);
-      navigate(data.user.role === 'admin' ? '/admin' : '/student');
+      const isAdminUser = ['super_admin', 'faculty_admin', 'admin'].includes(data.user.role);
+      navigate(isAdminUser ? '/admin' : '/student');
     } catch (err) {
       toast.error(err.response?.data?.message || 'Login failed. Please try again.');
     } finally {
@@ -140,24 +141,15 @@ const Login = () => {
             </button>
           </form>
 
-          <div className="mt-6 border-t border-white/10 pt-6 space-y-3">
-            <p className="text-center text-primary-200 text-sm">Don&apos;t have an account?</p>
-            <div className="grid grid-cols-2 gap-3">
-              <Link
-                id="link-student-signup"
-                to="/signup/student"
-                className="flex items-center justify-center gap-2 py-2.5 bg-white/10 border border-white/20 rounded-xl text-white text-sm font-medium hover:bg-white/20 transition-all"
-              >
-                <GraduationCap className="w-4 h-4" /> Student
-              </Link>
-              <Link
-                id="link-admin-signup"
-                to="/signup/admin"
-                className="flex items-center justify-center gap-2 py-2.5 bg-white/10 border border-white/20 rounded-xl text-white text-sm font-medium hover:bg-white/20 transition-all"
-              >
-                <Shield className="w-4 h-4" /> Admin
-              </Link>
-            </div>
+          <div className="mt-6 border-t border-white/10 pt-6 space-y-3 text-center">
+            <p className="text-primary-200 text-sm">Don&apos;t have an account?</p>
+            <Link
+              id="link-student-signup"
+              to="/signup/student"
+              className="w-full flex items-center justify-center gap-2 py-2.5 bg-white/10 border border-white/20 rounded-xl text-white text-sm font-medium hover:bg-white/20 transition-all shadow-sm"
+            >
+              <GraduationCap className="w-4 h-4" /> Sign Up as Student
+            </Link>
           </div>
         </div>
       </div>

@@ -6,7 +6,6 @@ import ProtectedRoute from './components/common/ProtectedRoute';
 // Auth pages
 import Login from './pages/Login';
 import StudentSignup from './pages/StudentSignup';
-import AdminSignup from './pages/AdminSignup';
 import ForgotPassword from './pages/ForgotPassword';
 
 // Admin pages
@@ -21,6 +20,7 @@ import ExamBank from './pages/admin/ExamBank';
 import StudentsList from './pages/admin/StudentsList';
 import StudentProfileAdmin from './pages/admin/StudentProfile';
 import Toppers from './pages/admin/Toppers';
+import AddUsers from './pages/admin/AddUsers';
 
 // Student pages
 import StudentDashboard from './pages/student/StudentDashboard';
@@ -56,11 +56,15 @@ function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/signup/student" element={<StudentSignup />} />
-          <Route path="/signup/admin" element={<AdminSignup />} />
           <Route path="/" element={<Navigate to="/login" replace />} />
 
-          {/* Admin routes */}
-          <Route element={<ProtectedRoute allowedRoles={['admin']} />}>
+          {/* Super Admin Exclusive routes */}
+          <Route element={<ProtectedRoute allowedRoles={['super_admin', 'admin']} />}>
+            <Route path="/admin/users" element={<AddUsers />} />
+          </Route>
+
+          {/* General Admin routes (Super Admin + Faculty Admin) */}
+          <Route element={<ProtectedRoute allowedRoles={['super_admin', 'faculty_admin', 'admin']} />}>
             <Route path="/admin" element={<AdminDashboard />} />
             <Route path="/admin/exams" element={<ExamList />} />
             <Route path="/admin/exams/create" element={<CreateExam />} />

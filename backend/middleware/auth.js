@@ -30,11 +30,21 @@ const authenticate = async (req, res, next) => {
 };
 
 /**
- * Require admin role
+ * Require admin role (super_admin, faculty_admin, or legacy admin)
  */
 const requireAdmin = (req, res, next) => {
-  if (req.user.role !== 'admin') {
+  if (!req.user || !['super_admin', 'faculty_admin', 'admin'].includes(req.user.role)) {
     return res.status(403).json({ message: 'Access denied. Admin privileges required.' });
+  }
+  next();
+};
+
+/**
+ * Require super admin role strictly
+ */
+const requireSuperAdmin = (req, res, next) => {
+  if (!req.user || req.user.role !== 'super_admin') {
+    return res.status(403).json({ message: 'Access denied. Super Admin privileges required.' });
   }
   next();
 };
@@ -43,10 +53,10 @@ const requireAdmin = (req, res, next) => {
  * Require student role
  */
 const requireStudent = (req, res, next) => {
-  if (req.user.role !== 'student') {
+  if (!req.user || req.user.role !== 'student') {
     return res.status(403).json({ message: 'Access denied. Student access only.' });
   }
   next();
 };
 
-module.exports = { authenticate, requireAdmin, requireStudent };
+module.exports = { authenticate, requireAdmin, requireSuperAdmin, requireStudent };

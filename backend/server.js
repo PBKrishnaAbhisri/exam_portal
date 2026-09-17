@@ -9,11 +9,36 @@ const examRoutes = require('./routes/exams');
 const submissionRoutes = require('./routes/submissions');
 const adminRoutes = require('./routes/admin');
 
-// Cron jobs
+// Cron jobs & migrations
 const { startYearPromotionCron } = require('./utils/cronJobs');
+const User = require('./models/User');
+
+const migrateAdminRoles = async () => {
+  try {
+    const adminUpdateResult = await User.updateMany(
+      { role: 'admin' },
+      { $set: { role: 'super_admin' } }
+    );
+    const shyamUser = await User.findOneAndUpdate(
+      { email: 'shyamperika@rguktn.ac.in' },
+      { $set: { role: 'super_admin' } },
+      { new: true }
+    );
+    if (adminUpdateResult.modifiedCount > 0) {
+      console.log(`✅ Migrated ${adminUpdateResult.modifiedCount} legacy admin account(s) to 'super_admin'`);
+    }
+    if (shyamUser) {
+      console.log(`✅ Verified Super Admin account for ${shyamUser.email} (Role: ${shyamUser.role})`);
+    }
+  } catch (err) {
+    console.warn('Role migration check note:', err.message);
+  }
+};
 
 // Connect to MongoDB & start cron
-connectDB();
+connectDB().then(() => {
+  migrateAdminRoles();
+});
 startYearPromotionCron();
 
 const app = express();

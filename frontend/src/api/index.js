@@ -32,7 +32,6 @@ API.interceptors.response.use(
 
 export const loginUser = (data) => API.post('/auth/login', data);
 export const signupStudent = (data) => API.post('/auth/signup/student', data);
-export const signupAdmin = (data) => API.post('/auth/signup/admin', data);
 export const getMe = () => API.get('/auth/me');
 export const updateProfile = (data) => API.patch('/auth/profile', data);
 export const resetStudentPassword = (data) => API.post('/auth/student/reset-password', data);
@@ -155,6 +154,11 @@ export const getStudentAdminProfile = (id, params = {}) => API.get(`/admin/stude
 export const getToppers = (params = {}) => API.get('/admin/toppers', { params });
 export const exportPDF = (examId, params = {}) => API.get(`/admin/export/pdf/${examId}`, { params, responseType: 'blob' });
 export const exportExcel = (examId, params = {}) => API.get(`/admin/export/excel/${examId}`, { params, responseType: 'blob' });
+
+// Admin User Management (Super Admin only)
+export const getAdminUsers = () => API.get('/admin/users');
+export const createFacultyUser = (data) => API.post('/admin/users', data);
+export const deleteFacultyUser = (id) => API.delete(`/admin/users/${id}`);
 
 // Resume
 export const uploadResume = (formData) =>

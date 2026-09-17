@@ -41,11 +41,25 @@ export const AuthProvider = ({ children }) => {
     localStorage.removeItem('token');
   };
 
-  const isAdmin = () => user?.role === 'admin';
+  const isAdmin = () => ['super_admin', 'faculty_admin', 'admin'].includes(user?.role);
+  const isSuperAdmin = () => user?.role === 'super_admin';
+  const isFacultyAdmin = () => user?.role === 'faculty_admin';
   const isStudent = () => user?.role === 'student';
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, logout, isAdmin, isStudent }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        token,
+        loading,
+        login,
+        logout,
+        isAdmin,
+        isSuperAdmin,
+        isFacultyAdmin,
+        isStudent,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

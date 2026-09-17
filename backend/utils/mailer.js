@@ -163,4 +163,74 @@ const sendPasswordResetOTP = async (email, name, otp) => {
   }
 };
 
-module.exports = { sendExamPublishNotifications, sendPasswordResetOTP };
+/**
+ * Send Faculty Account Credentials Email
+ */
+const sendFacultyCredentialsEmail = async (email, name, password) => {
+  const transporter = createTransporter();
+  const portalUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/login`;
+
+  if (!transporter) {
+    console.warn(`[Mailer] SMTP not configured. Faculty account credentials for ${email}: ${password}`);
+    return { success: false, reason: 'SMTP not configured' };
+  }
+
+  try {
+    await transporter.sendMail({
+      from: `"RGUKT Exam Portal" <${process.env.SMTP_USER}>`,
+      to: email,
+      subject: '🎓 Your RGUKT Exam Portal Faculty Account Details',
+      html: `
+        <div style="font-family: Inter, Arial, sans-serif; max-width: 540px; margin: 0 auto; background: #f8fafc; padding: 24px; border-radius: 12px;">
+          <div style="background: #1e293b; padding: 24px; border-radius: 8px 8px 0 0; text-align: center;">
+            <h1 style="color: white; margin: 0; font-size: 20px;">🎓 Faculty Account Created</h1>
+            <p style="color: #94a3b8; margin: 6px 0 0 0; font-size: 13px;">RGUKT Online Examination Portal</p>
+          </div>
+          <div style="background: white; padding: 24px; border-radius: 0 0 8px 8px; border: 1px solid #e2e8f0; border-top: none;">
+            <p style="color: #334155; margin: 0 0 12px 0;">Dear <strong>${name || 'Faculty Member'}</strong>,</p>
+            <p style="color: #475569; margin: 0 0 18px 0; font-size: 14px; line-height: 1.5;">
+              A Faculty Administrator account has been provisioned for you on the RGUKT Examination Portal by the Super Administrator. You can use the credentials below to log in:
+            </p>
+            
+            <div style="background: #f1f5f9; padding: 18px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #2563eb;">
+              <table style="width: 100%; border-collapse: collapse; font-size: 14px; color: #1e293b;">
+                <tr>
+                  <td style="padding: 6px 0; font-weight: 600; width: 35%;">Portal URL:</td>
+                  <td style="padding: 6px 0;"><a href="${portalUrl}" style="color: #2563eb; text-decoration: none;">${portalUrl}</a></td>
+                </tr>
+                <tr>
+                  <td style="padding: 6px 0; font-weight: 600;">Email ID:</td>
+                  <td style="padding: 6px 0; font-family: monospace; font-size: 14px;">${email}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 6px 0; font-weight: 600;">Temporary Password:</td>
+                  <td style="padding: 6px 0; font-family: monospace; font-size: 15px; font-weight: bold; color: #0f172a;">${password}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 6px 0; font-weight: 600;">Assigned Role:</td>
+                  <td style="padding: 6px 0;"><span style="background: #dbeafe; color: #1d4ed8; padding: 2px 8px; border-radius: 6px; font-size: 12px; font-weight: bold;">Faculty Admin</span></td>
+                </tr>
+              </table>
+            </div>
+
+            <div style="text-align: center; margin: 24px 0;">
+              <a href="${portalUrl}" style="display: inline-block; background: #2563eb; color: white; text-decoration: none; padding: 12px 28px; border-radius: 8px; font-weight: 600; font-size: 14px;">
+                Sign In to Exam Portal &rarr;
+              </a>
+            </div>
+
+            <p style="color: #64748b; font-size: 12px; margin: 0; line-height: 1.4;">
+              For security reasons, please change your password after logging in for the first time via your profile settings.
+            </p>
+          </div>
+        </div>
+      `,
+    });
+    return { success: true };
+  } catch (err) {
+    console.error('[Mailer] Failed to send faculty credentials email:', err.message);
+    return { success: false, error: err.message };
+  }
+};
+
+module.exports = { sendExamPublishNotifications, sendPasswordResetOTP, sendFacultyCredentialsEmail };

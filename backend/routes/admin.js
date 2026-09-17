@@ -2,7 +2,8 @@ const express = require('express');
 const router = express.Router();
 const PDFDocument = require('pdfkit');
 const ExcelJS = require('exceljs');
-const { authenticate, requireAdmin } = require('../middleware/auth');
+const { authenticate, requireAdmin, requireSuperAdmin } = require('../middleware/auth');
+const { sendFacultyCredentialsEmail } = require('../utils/mailer');
 const Exam = require('../models/Exam');
 const Submission = require('../models/Submission');
 const User = require('../models/User');
@@ -792,7 +793,7 @@ router.get('/students/:id/resume', async (req, res) => {
     } catch {
       return res.status(401).json({ message: 'Invalid or expired token.' });
     }
-    if (decoded.role !== 'admin') {
+    if (!['super_admin', 'faculty_admin', 'admin'].includes(decoded.role)) {
       return res.status(403).json({ message: 'Admin access required.' });
     }
 
@@ -868,6 +869,118 @@ router.get('/students/:id/resume', async (req, res) => {
   } catch (error) {
     console.error('Admin resume download error:', error);
     res.status(500).json({ message: 'Server error fetching resume.' });
+  }
+});
+
+// ─── USER MANAGEMENT (SUPER ADMIN ONLY) ──────────────────────────────────────
+
+/**
+ * @route   GET /api/admin/users
+ * @desc    Get all faculty and admin users
+ * @access  Super Admin only
+ */
+router.get('/users', authenticate, requireSuperAdmin, async (req, res) => {
+  try {
+    const users = await User.find({
+      role: { $in: ['super_admin', 'faculty_admin', 'admin'] },
+    })
+      .select('name email role createdAt updatedAt')
+      .sort({ createdAt: -1 });
+
+    res.status(200).json({ users, total: users.length });
+  } catch (error) {
+    console.error('Get admin users error:', error);
+    res.status(500).json({ message: 'Server error fetching user list.' });
+  }
+});
+
+/**
+ * @route   POST /api/admin/users
+ * @desc    Create a new faculty admin account
+ * @access  Super Admin only
+ */
+router.post('/users', authenticate, requireSuperAdmin, async (req, res) => {
+  try {
+    const { name, email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ message: 'Email and password are required.' });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+    if (!/^\S+@\S+\.\S+$/.test(normalizedEmail)) {
+      return res.status(400).json({ message: 'Please provide a valid email address.' });
+    }
+
+    if (password.length < 8) {
+      return res.status(400).json({ message: 'Password must be at least 8 characters long.' });
+    }
+
+    const existingUser = await User.findOne({ email: normalizedEmail });
+    if (existingUser) {
+      return res.status(409).json({ message: 'An account with this email already exists.' });
+    }
+
+    const displayName = (name && name.trim()) ? name.trim() : normalizedEmail.split('@')[0];
+
+    const newUser = await User.create({
+      name: displayName,
+      email: normalizedEmail,
+      password,
+      role: 'faculty_admin',
+    });
+
+    // Send credentials email in background
+    sendFacultyCredentialsEmail(normalizedEmail, displayName, password).catch((err) => {
+      console.warn('[User Management] Failed to send credentials email:', err.message);
+    });
+
+    res.status(201).json({
+      message: 'Faculty administrator account created successfully.',
+      user: {
+        _id: newUser._id,
+        name: newUser.name,
+        email: newUser.email,
+        role: newUser.role,
+        createdAt: newUser.createdAt,
+      },
+    });
+  } catch (error) {
+    console.error('Create faculty admin error:', error);
+    res.status(500).json({ message: 'Server error creating faculty user.' });
+  }
+});
+
+/**
+ * @route   DELETE /api/admin/users/:id
+ * @desc    Revoke/delete a faculty admin user
+ * @access  Super Admin only
+ */
+router.delete('/users/:id', authenticate, requireSuperAdmin, async (req, res) => {
+  try {
+    const targetId = req.params.id;
+
+    if (req.user._id.toString() === targetId) {
+      return res.status(400).json({ message: 'You cannot revoke or delete your own account.' });
+    }
+
+    const targetUser = await User.findById(targetId);
+    if (!targetUser) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
+
+    if (targetUser.role === 'super_admin') {
+      return res.status(403).json({ message: 'Cannot delete or revoke a Super Admin account.' });
+    }
+
+    await User.findByIdAndDelete(targetId);
+
+    res.status(200).json({
+      message: `Access for ${targetUser.name} (${targetUser.email}) has been revoked.`,
+    });
+  } catch (error) {
+    console.error('Delete admin user error:', error);
+    res.status(500).json({ message: 'Server error revoking user access.' });
   }
 });
 
