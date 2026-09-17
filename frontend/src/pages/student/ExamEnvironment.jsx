@@ -120,11 +120,15 @@ const ExamEnvironment = () => {
 
     const bootstrap = async () => {
       try {
-        // 1. Request Webcam (480x360)
+        // 1. Request High-Quality Webcam
         setInitStatusText('Starting webcam...');
         try {
           const stream = await navigator.mediaDevices.getUserMedia({
-            video: { width: 480, height: 360 },
+            video: {
+              width: { ideal: 1280, min: 640 },
+              height: { ideal: 720, min: 480 },
+              facingMode: 'user',
+            },
             audio: false,
           });
           webcamStreamRef.current = stream;
@@ -303,13 +307,12 @@ const ExamEnvironment = () => {
     startDetectionLoop(videoRef.current, (detections) => {
       if (lockedRef.current) return;
 
-      if (detections.length > 0) {
-        setPhoneDetected(true);
+      if (detections && detections.length > 0) {
         if (!currentlyFlagged) {
           currentlyFlagged = true;
           const loggedThisTick = new Set();
           detections.forEach((p) => {
-            const devName = p.className || p.class;
+            const devName = p.className || p.class || 'device';
             if (loggedThisTick.has(devName)) return;
             loggedThisTick.add(devName);
             const snap = captureSnapshot(videoRef.current);
@@ -321,7 +324,6 @@ const ExamEnvironment = () => {
           });
         }
       } else {
-        setPhoneDetected(false);
         currentlyFlagged = false;
       }
     });
@@ -1164,12 +1166,10 @@ const ExamEnvironment = () => {
 
         {/* ── RIGHT: LIVE PROCTOR CAMERA & PALETTE ─────────────────────────── */}
         <div className="w-72 bg-white border-l border-slate-200 flex flex-col overflow-hidden flex-shrink-0 relative z-10 shadow-sm">
-          {/* Live Webcam Tile */}
+          {/* Live Webcam Tile (Clean feed, stealth detection without visual hints to the student) */}
           <div className="p-3.5 border-b border-slate-100 bg-slate-50/50">
             <div
-              className={`relative rounded-2xl overflow-hidden bg-slate-900 shadow-sm ${
-                phoneDetected ? 'ring-2 ring-red-500 shadow-lg shadow-red-500/30' : 'ring-1 ring-slate-200'
-              }`}
+              className="relative rounded-2xl overflow-hidden bg-slate-900 shadow-sm ring-1 ring-slate-200"
               style={{ aspectRatio: '4/3' }}
             >
               <video
@@ -1182,21 +1182,12 @@ const ExamEnvironment = () => {
                 muted
                 className="w-full h-full object-cover"
               />
-              <div className="absolute bottom-2 left-2">
-                <span
-                  className={`text-xs font-semibold px-2.5 py-0.5 rounded-full ${
-                    phoneDetected ? 'bg-red-600 text-white' : 'bg-emerald-600/90 text-white backdrop-blur-sm'
-                  }`}
-                >
-                  {phoneDetected ? '⚠ Device' : '● Live Face'}
+              <div className="absolute bottom-2 left-2 z-20">
+                <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full shadow-sm bg-emerald-600/90 text-white backdrop-blur-sm">
+                  ● Live Proctoring
                 </span>
               </div>
             </div>
-            {phoneDetected && (
-              <p className="text-red-600 text-xs font-bold mt-1.5 text-center animate-pulse">
-                Unauthorized device detected!
-              </p>
-            )}
           </div>
 
           {/* Question Palette with Enlarged Controls */}

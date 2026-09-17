@@ -4,23 +4,30 @@ import * as ort from 'onnxruntime-web';
 const MODEL_URL = '/models/yolov8m.onnx';
 const MODEL_INPUT_SIZE = 640;
 
-const TARGET_CLASSES = {
+// Target prohibited classes in standard COCO-80
+export const TARGET_CLASSES = {
   67: 'cell phone',
-  63: 'laptop',
-  62: 'tv',
-  65: 'remote',
+  65: 'remote',      // Often triggered when holding phone by edges/back or calculators
+  63: 'laptop',      // Prohibited secondary laptop/tablet screen
+  62: 'tv',          // Prohibited external monitor
+  73: 'book',        // Prohibited textbook/notes/cheat sheets
 };
 
-const CLASS_THRESHOLDS = {
-  'cell phone': 0.35,
-  'laptop': 0.55,
-  'tv': 0.55,
-  'remote': 0.5,
+// Calibrated sensitivity thresholds:
+// Phones held in hands in webcam view suffer from partial occlusion by fingers,
+// angle, screen reflections, and webcam compression.
+// Standard 0.35+ threshold causes massive false negatives.
+export const CLASS_THRESHOLDS = {
+  'cell phone': 0.20,  // Highly sensitive to phones held in hand / occluded
+  'remote': 0.28,      // Phones held by edge or backside
+  'laptop': 0.45,
+  'tv': 0.50,
+  'book': 0.32,
 };
 
-const MODEL_MIN_SCORE = 0.3;
+const MODEL_MIN_SCORE = 0.18;
 const NMS_IOU_THRESHOLD = 0.45;
-export const DETECTION_INTERVAL_MS = 250;
+export const DETECTION_INTERVAL_MS = 100; // Ultra-fast ~10 FPS real-time capture
 
 // ── Session & State Variables ────────────────────────────────────────────────
 let ortSession = null;
@@ -33,11 +40,16 @@ let detectionHandle = null;
 let inferenceRunning = false;
 let lastDetectAt = 0;
 
-// Offscreen Letterbox Canvas
+// Offscreen Letterbox Canvas & Preallocated Tensor Buffer (Zero GC overhead)
 const letterboxCanvas = document.createElement('canvas');
 letterboxCanvas.width = MODEL_INPUT_SIZE;
 letterboxCanvas.height = MODEL_INPUT_SIZE;
 const lctx = letterboxCanvas.getContext('2d', { willReadFrequently: true });
+if (lctx) {
+  lctx.imageSmoothingEnabled = true;
+  lctx.imageSmoothingQuality = 'high';
+}
+const sharedTensorData = new Float32Array(3 * MODEL_INPUT_SIZE * MODEL_INPUT_SIZE);
 
 /**
  * Helper to dynamically determine the exact installed onnxruntime-web version.
@@ -71,8 +83,6 @@ export function getOrtVersion() {
  *   If the CDN is unreachable / blocked, attempts to initialize using local assets
  *   at `/models/` or local paths as a last-resort fallback.
  * 
- * If all paths fail, throws an error so ExamEnvironment falls back to standard proctoring.
- *
  * @param {Function} [onProgress] - Optional progress callback (0 - 100)
  * @returns {Promise<string>} The active backend ('webgpu' or 'wasm')
  */
@@ -102,7 +112,7 @@ export async function initYOLO(onProgress) {
 
   let primaryCdnError = null;
 
-  // Session options optimized for large models (104MB YOLOv8m)
+  // Session options optimized for YOLOv8m
   const gpuOptions = {
     executionProviders: ['webgpu'],
     graphOptimizationLevel: 'basic',
@@ -194,7 +204,6 @@ export async function initYOLO(onProgress) {
   return activeBackend;
 }
 
-
 // ── 2. Status & Inspection Functions ─────────────────────────────────────────
 export function isModelLoaded() {
   return ortSession !== null;
@@ -214,8 +223,8 @@ export function getLastInferenceLatency() {
 
 // ── 3. Preprocessing: Letterbox Frame ─────────────────────────────────────────
 function letterboxFrame(video) {
-  const vw = video.videoWidth;
-  const vh = video.videoHeight;
+  const vw = video.videoWidth || 640;
+  const vh = video.videoHeight || 480;
 
   const scale = Math.min(MODEL_INPUT_SIZE / vw, MODEL_INPUT_SIZE / vh);
   const newW = Math.round(vw * scale);
@@ -234,15 +243,14 @@ function letterboxFrame(video) {
 function frameToTensor() {
   const { data } = lctx.getImageData(0, 0, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE);
   const size = MODEL_INPUT_SIZE * MODEL_INPUT_SIZE;
-  const tensorData = new Float32Array(3 * size);
 
   for (let i = 0; i < size; i++) {
-    tensorData[i] = data[i * 4] / 255;             // R
-    tensorData[size + i] = data[i * 4 + 1] / 255;  // G
-    tensorData[2 * size + i] = data[i * 4 + 2] / 255; // B
+    sharedTensorData[i] = data[i * 4] / 255;             // R
+    sharedTensorData[size + i] = data[i * 4 + 1] / 255;  // G
+    sharedTensorData[2 * size + i] = data[i * 4 + 2] / 255; // B
   }
 
-  return new ort.Tensor('float32', tensorData, [1, 3, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE]);
+  return new ort.Tensor('float32', sharedTensorData, [1, 3, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE]);
 }
 
 // ── 5. Postprocessing: Decode YOLOv8 Output Tensor ───────────────────────────
@@ -252,26 +260,51 @@ function decodeDetections(output, letterboxInfo, videoW, videoH) {
   }
 
   const data = output.data;
-  const dims = output.dims; // [1, 84, 8400]
-  const numBoxes = dims[2] || 8400;
+  const dims = output.dims; // e.g., [1, 84, 8400] or [1, 8400, 84]
+
+  let isTransposed = false;
+  let numBoxes = 8400;
+  let totalChannels = 84;
+
+  if (dims.length === 3) {
+    if (dims[1] === 84 && dims[2] >= 84) {
+      // Standard [1, 84, 8400]
+      numBoxes = dims[2];
+      totalChannels = dims[1];
+      isTransposed = false;
+    } else if (dims[2] === 84 && dims[1] >= 84) {
+      // Transposed [1, 8400, 84]
+      numBoxes = dims[1];
+      totalChannels = dims[2];
+      isTransposed = true;
+    } else {
+      numBoxes = dims[2] || 8400;
+    }
+  }
+
   const { scale, padX, padY } = letterboxInfo;
   const candidates = [];
 
   for (let i = 0; i < numBoxes; i++) {
     for (const clsIdxStr in TARGET_CLASSES) {
       const clsIdx = Number(clsIdxStr);
-      const score = data[(4 + clsIdx) * numBoxes + i];
-      const className = TARGET_CLASSES[clsIdx];
+      const score = isTransposed
+        ? data[i * totalChannels + (4 + clsIdx)]
+        : data[(4 + clsIdx) * numBoxes + i];
 
-      if (score < MODEL_MIN_SCORE || score < (CLASS_THRESHOLDS[className] ?? 0.5)) {
+      const className = TARGET_CLASSES[clsIdx];
+      const threshold = CLASS_THRESHOLDS[className] ?? 0.30;
+
+      if (score < MODEL_MIN_SCORE || score < threshold) {
         continue;
       }
 
-      const cx = data[0 * numBoxes + i];
-      const cy = data[1 * numBoxes + i];
-      const w = data[2 * numBoxes + i];
-      const h = data[3 * numBoxes + i];
+      const cx = isTransposed ? data[i * totalChannels + 0] : data[0 * numBoxes + i];
+      const cy = isTransposed ? data[i * totalChannels + 1] : data[1 * numBoxes + i];
+      const w = isTransposed ? data[i * totalChannels + 2] : data[2 * numBoxes + i];
+      const h = isTransposed ? data[i * totalChannels + 3] : data[3 * numBoxes + i];
 
+      // Reverse letterbox transformation back to source video coordinates
       const x1 = (cx - w / 2 - padX) / scale;
       const y1 = (cy - h / 2 - padY) / scale;
       const bw = w / scale;
@@ -285,10 +318,10 @@ function decodeDetections(output, letterboxInfo, videoW, videoH) {
         className: className,
         score: score,
         bbox: [
-          cx0,
-          cy0,
-          Math.min(bw, videoW - cx0),
-          Math.min(bh, videoH - cy0),
+          Math.round(cx0),
+          Math.round(cy0),
+          Math.round(Math.min(bw, videoW - cx0)),
+          Math.round(Math.min(bh, videoH - cy0)),
         ],
       });
     }
@@ -407,11 +440,10 @@ export async function detectFrame(video) {
   }
 }
 
-
 // ── 8. Continuous Detection Loop ──────────────────────────────────────────────
 /**
  * Starts a continuous detection loop on the webcam video element.
- * Throttles inference to ~250ms via requestAnimationFrame.
+ * Throttles inference via requestAnimationFrame.
  * Prevents multiple concurrent loops.
  *
  * @param {HTMLVideoElement} video - Active webcam video element
@@ -430,10 +462,11 @@ export function startDetectionLoop(video, onDetections) {
   async function tick(now) {
     if (!detectionRunning) return;
 
-    // Throttle inference: check interval, model session, video readyState, and concurrent run
+    // Check interval, model session, video readyState (>=2), and avoid concurrent inference
     if (
       ortSession &&
-      video.readyState === 4 &&
+      video.readyState >= 2 &&
+      video.videoWidth > 0 &&
       !inferenceRunning &&
       now - lastDetectAt >= DETECTION_INTERVAL_MS
     ) {
@@ -466,21 +499,90 @@ export function stopDetectionLoop() {
   lastDetectAt = 0;
 }
 
-// ── 9. Snapshot Utility ───────────────────────────────────────────────────────
+// ── 9. Live Visual Overlay Bounding Box Utility ──────────────────────────────
+/**
+ * Draws real-time visual bounding boxes and labels onto an overlay canvas.
+ *
+ * @param {HTMLCanvasElement} canvas - The overlay canvas placed on top of the video
+ * @param {HTMLVideoElement} video - The source webcam video element
+ * @param {Array} detections - List of current detected objects
+ */
+export function drawDetections(canvas, video, detections) {
+  if (!canvas || !video) return;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  const w = canvas.width || canvas.clientWidth || 320;
+  const h = canvas.height || canvas.clientHeight || 240;
+
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+
+  ctx.clearRect(0, 0, w, h);
+
+  if (!detections || detections.length === 0) return;
+
+  const vw = video.videoWidth || w;
+  const vh = video.videoHeight || h;
+  const scaleX = w / vw;
+  const scaleY = h / vh;
+
+  detections.forEach((d) => {
+    const [bx, by, bw, bh] = d.bbox;
+    const x = bx * scaleX;
+    const y = by * scaleY;
+    const boxW = bw * scaleX;
+    const boxH = bh * scaleY;
+
+    // Draw high-visibility detection box
+    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = '#ef4444';
+    ctx.fillStyle = 'rgba(239, 68, 68, 0.18)';
+    
+    if (typeof ctx.roundRect === 'function') {
+      ctx.beginPath();
+      ctx.roundRect(x, y, boxW, boxH, 6);
+      ctx.fill();
+      ctx.stroke();
+    } else {
+      ctx.fillRect(x, y, boxW, boxH);
+      ctx.strokeRect(x, y, boxW, boxH);
+    }
+
+    // Draw device badge label
+    const className = d.className || d.class || 'device';
+    const label = `🚨 ${className.toUpperCase()} ${(d.score * 100).toFixed(0)}%`;
+    ctx.font = 'bold 11px system-ui, -apple-system, sans-serif';
+    const textWidth = ctx.measureText(label).width;
+    const labelHeight = 18;
+
+    const labelY = Math.max(0, y - labelHeight);
+    ctx.fillStyle = '#ef4444';
+    ctx.fillRect(x, labelY, textWidth + 10, labelHeight);
+
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(label, x + 5, labelY + 13);
+  });
+}
+
+// ── 10. Snapshot Utility ──────────────────────────────────────────────────────
 export function captureSnapshot(video) {
   if (!video) return null;
   try {
-    const width = video.videoWidth || video.clientWidth || 480;
-    const height = video.videoHeight || video.clientHeight || 360;
+    const width = video.videoWidth || video.clientWidth || 640;
+    const height = video.videoHeight || video.clientHeight || 480;
     if (width <= 0 || height <= 0) return null;
     const canvas = document.createElement('canvas');
     canvas.width = width;
     canvas.height = height;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(video, 0, 0, width, height);
-    return canvas.toDataURL('image/jpeg', 0.65);
+    return canvas.toDataURL('image/jpeg', 0.75);
   } catch (err) {
     console.error('[captureSnapshot] Error capturing evidence frame:', err);
     return null;
   }
 }
+
